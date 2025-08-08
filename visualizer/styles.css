@@ -1,0 +1,91 @@
+/* Tailwind base is loaded via CDN. This file holds a few custom utilities without @apply. */
+
+.control-btn {
+  height: 2.25rem;
+  width: 2.25rem;
+  user-select: none;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition: background 0.2s ease;
+}
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.seek {
+  margin-left: 0.5rem;
+  margin-right: 0.5rem;
+  height: 0.5rem;
+  width: 100%;
+  cursor: pointer;
+  appearance: none;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  accent-color: rgba(255, 255, 255, 0.8);
+}
+.seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  background: white;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+}
+.seek::-moz-range-thumb {
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  background: white;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+}
+
+.volume {
+  height: 0.5rem;
+  width: 7rem;
+  cursor: pointer;
+  appearance: none;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  accent-color: rgba(255, 255, 255, 0.8);
+}
+.volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  background: white;
+}
+.volume::-moz-range-thumb {
+  height: 14px;
+  width: 14px;
+  border-radius: 9999px;
+  background: white;
+}
+
+/* Playlist chips */
+.chip {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 0.375rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.chip:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.chip-active {
+  background: rgba(255, 255, 255, 0.25);
+  border-color: rgba(255, 255, 255, 0.2);
+}

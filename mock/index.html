@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Student Credential Profile – Mock</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50: '#EEF2FF', 100: '#E0E7FF', 200: '#C7D2FE', 300: '#A5B4FC', 400: '#818CF8', 500: '#6366F1', 600: '#5458D4', 700: '#4549B7', 800: '#363A9A', 900: '#2A2E7F' },
+                        aqua: { 400: '#4DD0E1', 500: '#26C6DA' }
+                    },
+                    dropShadow: { glow: '0 0 25px rgba(124,92,255,.25)' },
+                    boxShadow: { glass: '0 10px 40px rgba(0,0,0,.35)' }
+                }
+            }
+        }
+    </script>
+</head>
+
+<body class="bg-[#0b0d10] text-white font-['Plus_Jakarta_Sans',system-ui]">
+    <div class="pointer-events-none fixed inset-0 -z-10">
+        <div
+            class="absolute -top-24 -right-24 h-96 w-96 rounded-full bg-gradient-to-br from-brand-500/30 to-aqua-500/30 blur-3xl">
+        </div>
+        <div
+            class="absolute top-1/3 -left-24 h-[32rem] w-[32rem] rounded-full bg-gradient-to-tr from-aqua-500/25 to-brand-500/25 blur-[100px]">
+        </div>
+        <div
+            class="absolute bottom-0 right-1/4 h-72 w-72 rounded-full bg-gradient-to-tr from-white/10 to-transparent blur-3xl">
+        </div>
+    </div>
+
+    <header id="profile-hero" class="relative w-full border-b border-white/10">
+        <div class="absolute inset-0">
+            <img id="cover-image" alt="Cover image" class="h-full w-full object-cover" />
+            <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-[#0b0d10]"></div>
+        </div>
+
+        <div
+            class="relative mx-auto grid w-full max-w-7xl grid-cols-1 gap-6 px-6 pb-8 pt-24 sm:grid-cols-[auto,1fr] sm:items-end">
+            <div class="rounded-3xl bg-white/10 p-1 shadow-glass backdrop-blur-xl ring-1 ring-white/15">
+                <img id="profile-avatar" class="h-28 w-28 rounded-2xl object-cover" alt="Profile avatar" />
+            </div>
+            <div class="max-w-3xl">
+                <h1 id="student-name"
+                    class="text-balance bg-gradient-to-r from-white to-white/80 bg-clip-text text-3xl font-semibold text-transparent drop-shadow-glow sm:text-4xl">
+                </h1>
+                <p id="student-blurb" class="mt-1 text-pretty text-base text-white/70"></p>
+            </div>
+        </div>
+    </header>
+
+    <main class="mx-auto w-full max-w-7xl px-6 py-8">
+        <section id="highlighted-section" class="mb-8">
+            <div class="mb-3 flex items-baseline justify-between gap-4">
+                <h2 class="text-lg font-semibold text-white">Highlighted credentials</h2>
+                <div class="text-sm text-white/60">Pinned by the student</div>
+            </div>
+            <div id="highlighted-list" class="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2" aria-live="polite">
+            </div>
+        </section>
+
+        <section id="all-section" class="space-y-3">
+            <div class="flex items-baseline justify-between gap-4">
+                <h2 class="text-lg font-semibold text-white">All visible credentials</h2>
+                <div id="visible-count" class="text-sm text-white/60"></div>
+            </div>
+            <div id="credential-grid" class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-live="polite">
+            </div>
+        </section>
+    </main>
+
+    <!-- Zoom Lightbox -->
+    <div id="lightbox" aria-hidden="true" role="dialog" aria-label="Zoomed image"
+        class="hidden fixed inset-0 z-50 grid place-items-center">
+        <div class="lightbox-backdrop absolute inset-0 bg-black/70 backdrop-blur-sm"></div>
+        <div
+            class="relative grid h-[85vh] w-[96vw] max-w-5xl grid-rows-[1fr_auto] overflow-hidden rounded-2xl bg-[#0d1117] shadow-2xl ring-1 ring-white/10">
+            <img id="lightbox-image" alt="Zoomed credential"
+                class="h-full w-full object-contain bg-[radial-gradient(600px_400px_at_70%_20%,rgba(124,92,255,.08),transparent_60%),radial-gradient(500px_300px_at_10%_90%,rgba(77,208,225,.08),transparent_60%)]" />
+            <div class="flex justify-end gap-2 border-t border-white/10 bg-white/5 p-2">
+                <button id="zoom-out"
+                    class="h-9 w-9 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">−</button>
+                <button id="zoom-reset"
+                    class="h-9 rounded-lg border border-white/10 bg-white/5 px-3 text-white hover:bg-white/10">100%</button>
+                <button id="zoom-in"
+                    class="h-9 w-9 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">+</button>
+                <button id="lightbox-close"
+                    class="h-9 w-9 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10">✕</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Verify Modal -->
+    <div id="verify-modal" aria-hidden="true" role="dialog" aria-label="Verification details"
+        class="hidden fixed inset-0 z-50 grid place-items-center">
+        <div class="modal-backdrop absolute inset-0 bg-black/70 backdrop-blur-sm" data-close="verify"></div>
+        <div
+            class="relative w-[92vw] max-w-2xl overflow-hidden rounded-2xl bg-[#0e1318]/95 shadow-2xl ring-1 ring-white/10">
+            <div
+                class="flex items-center justify-between border-b border-white/10 bg-gradient-to-b from-brand-500/15 to-transparent px-4 py-3">
+                <h3 class="text-white">Blockchain Verification</h3>
+                <button id="verify-close"
+                    class="h-9 w-9 rounded-lg border border-white/10 bg-white/5 text-white hover:bg-white/10"
+                    title="Close" aria-label="Close">✕</button>
+            </div>
+            <div class="grid gap-3 p-4">
+                <div class="grid grid-cols-[140px_1fr] items-baseline gap-2 max-sm:grid-cols-1">
+                    <div class="text-white/60">Credential</div>
+                    <div id="verify-credential-name" class="text-white"></div>
+                </div>
+                <div class="grid grid-cols-[140px_1fr] items-baseline gap-2 max-sm:grid-cols-1">
+                    <div class="text-white/60">Issuer</div>
+                    <div id="verify-issuer" class="text-white"></div>
+                </div>
+                <div class="grid grid-cols-[140px_1fr] items-baseline gap-2 max-sm:grid-cols-1">
+                    <div class="text-white/60">Hash</div>
+                    <div id="verify-hash"
+                        class="break-all rounded-lg border border-white/10 bg-black/50 px-2 py-1 font-mono text-sm text-white">
+                    </div>
+                </div>
+                <div class="grid grid-cols-[140px_1fr] items-baseline gap-2 max-sm:grid-cols-1">
+                    <div class="text-white/60">Chain</div>
+                    <div id="verify-chain" class="text-white"></div>
+                </div>
+                <div class="grid grid-cols-[140px_1fr] items-baseline gap-2 max-sm:grid-cols-1">
+                    <div class="text-white/60">Transaction</div>
+                    <div><a id="verify-tx" target="_blank" rel="noopener noreferrer"
+                            class="text-aqua-400 hover:underline">View transaction</a></div>
+                </div>
+                <div class="grid grid-cols-[140px_1fr] items-baseline gap-2 max-sm:grid-cols-1">
+                    <div class="text-white/60">Issued</div>
+                    <div id="verify-issued" class="text-white"></div>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 border-t border-white/10 bg-white/5 px-4 py-3">
+                <button id="verify-copy"
+                    class="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white hover:bg-white/10">Copy
+                    hash</button>
+                <button id="verify-done"
+                    class="rounded-lg border border-white/10 bg-[#0f1318] px-3 py-2 text-white hover:bg-white/10">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js" defer></script>
+</body>
+
+</html>

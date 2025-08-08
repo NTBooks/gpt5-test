@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VaporVU Visualizer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap"
+        rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        neon: {
+                            pink: '#ff6ad5',
+                            purple: '#a86af7',
+                            cyan: '#5af8ff',
+                            blue: '#5aa9ff',
+                        },
+                    },
+                },
+            },
+        }
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body class="min-h-dvh bg-[#0b0d10] text-white font-['Plus_Jakarta_Sans',system-ui] overflow-hidden">
+    <!-- Background vapor gradients -->
+    <div class="pointer-events-none fixed inset-0 -z-10">
+        <div
+            class="absolute -top-24 -right-24 h-[28rem] w-[28rem] rounded-full bg-gradient-to-br from-neon.purple/30 to-neon.cyan/30 blur-3xl">
+        </div>
+        <div
+            class="absolute top-1/3 -left-24 h-[40rem] w-[40rem] rounded-full bg-gradient-to-tr from-neon.pink/25 to-neon.blue/25 blur-[110px]">
+        </div>
+        <div
+            class="absolute bottom-0 right-1/4 h-96 w-96 rounded-full bg-gradient-to-tr from-white/10 to-transparent blur-3xl">
+        </div>
+    </div>
+
+    <header class="relative z-10 flex items-center justify-between gap-4 px-4 py-3 sm:px-6">
+        <div class="flex items-center gap-3">
+            <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-neon.pink to-neon.cyan"></div>
+            <div class="text-lg font-semibold tracking-wide">VaporVU</div>
+        </div>
+        <div class="flex items-center gap-2 text-xs text-white/60">
+            <span>Drag & drop .flac files to play</span>
+        </div>
+    </header>
+
+    <main class="relative z-0 grid h-[calc(100dvh-56px)] grid-rows-[1fr_auto]">
+        <!-- Scene container -->
+        <section class="relative">
+            <canvas id="three-canvas" class="absolute inset-0 h-full w-full"></canvas>
+
+            <!-- Particles overlay is inside WebGL; this overlay only for drag-drop and hud -->
+            <div id="dropzone"
+                class="absolute inset-0 hidden place-items-center rounded-xl border-2 border-dashed border-white/30 bg-black/40 backdrop-blur-md">
+                <div class="pointer-events-none grid place-items-center gap-2 p-6 text-center">
+                    <div class="text-2xl font-semibold">Drop audio files</div>
+                    <div class="text-white/70">FLAC recommended. Multiple files create a playlist.</div>
+                </div>
+            </div>
+
+            <!-- Minimal HUD (now-playing + toggles) -->
+            <div
+                class="absolute left-3 top-3 flex items-center gap-3 rounded-lg bg-black/30 px-3 py-2 text-xs backdrop-blur-md ring-1 ring-white/10">
+                <div id="now-playing" class="max-w-[50vw] truncate">No track loaded</div>
+                <label class="flex items-center gap-1 whitespace-nowrap">
+                    <input id="toggle-afterimage" type="checkbox" checked class="accent-white" />
+                    Trails
+                </label>
+                <label class="flex items-center gap-1 whitespace-nowrap">
+                    <input id="toggle-bloom" type="checkbox" checked class="accent-white" />
+                    Bloom
+                </label>
+            </div>
+        </section>
+
+        <!-- Player + Playlist -->
+        <section
+            class="relative grid gap-3 bg-black/30 p-3 backdrop-blur-xl ring-1 ring-white/10 sm:grid-cols-[1fr_auto] sm:items-center">
+            <!-- Controls -->
+            <div class="flex items-center gap-3">
+                <button id="prev-btn" class="control-btn" title="Previous">⏮</button>
+                <button id="play-btn" class="control-btn" title="Play/Pause">▶️</button>
+                <button id="next-btn" class="control-btn" title="Next">⏭</button>
+
+                <input id="seek" type="range" min="0" max="100" value="0" class="seek" />
+                <div id="time" class="w-28 text-right text-xs tabular-nums">00:00 / 00:00</div>
+
+                <input id="volume" type="range" min="0" max="1" step="0.01" value="0.9" class="volume" title="Volume" />
+            </div>
+
+            <!-- Playlist -->
+            <div class="flex min-w-0 items-center gap-2 overflow-x-auto">
+                <button id="browse-btn"
+                    class="rounded-md border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/20">Browse
+                    files</button>
+                <input id="file-input" type="file" accept=".flac,.wav,.mp3,.m4a" multiple class="hidden" />
+                <ul id="playlist" class="flex min-w-0 gap-2"></ul>
+            </div>
+        </section>
+    </main>
+
+    <audio id="audio" crossorigin="anonymous"></audio>
+
+    <script type="module" src="/app.js"></script>
+</body>
+
+</html>
