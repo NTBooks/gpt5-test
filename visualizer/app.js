@@ -87,6 +87,7 @@ controls.addEventListener('end', () => { lastUserInputMs = performance.now(); })
 
 let zoomFreezeUntil = 0;
 let lastDist = 18;
+const GRAVITY = 0.06; // gravity constant for ember sprites
 
 // Postprocessing: afterimage trails + bloom for fat glows
 const composer = new EffectComposer(renderer);
@@ -147,7 +148,7 @@ for (let i = 0; i < numBars; i += 1) {
         thickness: 1.4,
         ior: 1.3,
         attenuationColor: new THREE.Color().setHSL(baseHue, 0.95, 0.5),
-        attenuationDistance: 1.0,
+        attenuationDistance: 1.6,
         clearcoat: 1.0,
         clearcoatRoughness: 0.1,
         transparent: true,
@@ -284,10 +285,11 @@ const cloudMat = new THREE.ShaderMaterial({
 const cloudDome = new THREE.Mesh(new THREE.SphereGeometry(170, 64, 64), cloudMat);
 scene.add(cloudDome);
 
-// Fireworks system (3dfx vibe): rockets + additive burst sparks + dotted trails
+// Fireworks system (3dfx vibe): rockets + additive burst sparks + ember trails
 const rockets = [];
 const bursts = [];
 const trailSprites = [];
+const embers = [];
 const smokes = [];
 
 function createCircleTexture(size = 64) {
@@ -360,22 +362,28 @@ function explodeAt(position, hue) {
     spawnSmoke(position, color, velocities);
 }
 
-function spawnTrailDot(position, hue) {
+function spawnTrailDot(position, hue) { spawnEmber(position, hue); }
+
+function spawnEmber(position, hue, vel) {
     const mat = new THREE.SpriteMaterial({
         map: circleTexture,
-        color: new THREE.Color().setHSL(hue, 0.8, 1.0),
+        color: new THREE.Color().setHSL(hue, 0.9, 0.85),
         blending: THREE.AdditiveBlending,
         transparent: true,
-        opacity: 0.95,
+        opacity: 0.9,
         depthWrite: false,
     });
     const sprite = new THREE.Sprite(mat);
     sprite.position.copy(position);
-    const s = THREE.MathUtils.randFloat(0.12, 0.22);
+    const s = THREE.MathUtils.randFloat(0.12, 0.26);
     sprite.scale.setScalar(s);
     sprite.renderOrder = 25;
     scene.add(sprite);
-    trailSprites.push({ sprite, life: 0.6 });
+    const v = vel ? vel.clone().multiplyScalar(0.08) : new THREE.Vector3();
+    v.x += THREE.MathUtils.randFloatSpread(0.06);
+    v.y += THREE.MathUtils.randFloatSpread(0.02);
+    v.z += THREE.MathUtils.randFloatSpread(0.06);
+    embers.push({ sprite, life: 1.6, lifeMax: 1.6, vel: v, baseHue: hue });
 }
 
 function spawnSmoke(origin, explosionColor, baseVelocities) {
@@ -565,10 +573,8 @@ function animate(t) {
         r.mesh.position.y += r.vy * 0.02;
         r.mesh.position.z += r.vz * 0.02;
         r.life -= 0.02;
-        // dotted trail: spawn sprite dots at a fixed cadence
-        if ((performance.now() * 0.01) % 1 < 0.12) {
-            spawnTrailDot(r.mesh.position, r.hue);
-        }
+        // ember trail along the rocket path
+        spawnEmber(r.mesh.position, r.hue, new THREE.Vector3(r.vx, r.vy, r.vz));
         r.mesh.material.color.offsetHSL(0, 0, Math.sin(performance.now() * 0.01) * 0.02);
         if (r.life <= 0 || r.vy <= 0) {
             const pos = r.mesh.position.clone();
@@ -589,7 +595,7 @@ function animate(t) {
         for (let j = 0; j < positions.count; j += 1) {
             // drag + gravity
             velocities.array[j * 3] *= b.drag;
-            velocities.array[j * 3 + 1] = velocities.array[j * 3 + 1] * b.drag - 0.02;
+            velocities.array[j * 3 + 1] = velocities.array[j * 3 + 1] * b.drag - GRAVITY * 0.33;
             velocities.array[j * 3 + 2] *= b.drag;
             positions.array[j * 3] += velocities.array[j * 3] * 0.02;
             positions.array[j * 3 + 1] += velocities.array[j * 3 + 1] * 0.02;
@@ -597,6 +603,21 @@ function animate(t) {
         }
         positions.needsUpdate = true;
         b.points.material.opacity = Math.max(0, b.life);
+        // spawn embers from explosion particles occasionally
+        if (Math.random() < 0.1) {
+            const idx = Math.floor(Math.random() * positions.count);
+            const p = new THREE.Vector3(
+                positions.array[idx * 3],
+                positions.array[idx * 3 + 1],
+                positions.array[idx * 3 + 2]
+            );
+            const v = new THREE.Vector3(
+                velocities.array[idx * 3],
+                velocities.array[idx * 3 + 1],
+                velocities.array[idx * 3 + 2]
+            );
+            spawnEmber(p, b.points.material.color.getHSL({}).h, v);
+        }
         if (b.life <= 0) {
             scene.remove(b.points);
             b.points.geometry.dispose();
@@ -605,7 +626,7 @@ function animate(t) {
         }
     }
 
-    // update smoke: drift outward, gentle rise, fast blur+fade; temporarily lit by recent explosion
+    // update smoke: drift outward, gentle rise, fast blur+fade; lit by explosions and bars (inverse-square)
     for (let i = smokes.length - 1; i >= 0; i -= 1) {
         const s = smokes[i];
         s.life -= 0.015; // slower fade overall
@@ -613,6 +634,30 @@ function animate(t) {
         const positions = s.cloud.geometry.getAttribute('position');
         const velocities = s.cloud.geometry.getAttribute('velocity');
         const ages = s.cloud.geometry.getAttribute('age');
+        // compute lighting from bars and recent explosions using inverse-square falloff
+        let barLight = 0; let barColor = new THREE.Color(0x000000);
+        const center = new THREE.Vector3();
+        center.fromBufferAttribute(positions, 0);
+        for (let b = 0; b < barsGroup.children.length; b += 1) {
+            const bar = barsGroup.children[b];
+            const d2 = Math.max(0.25, bar.position.distanceToSquared(center));
+            const influence = (bar.material.emissiveIntensity || 1) / d2; // inverse-square approx
+            barLight += influence;
+            barColor.add(bar.material.color.clone().multiplyScalar(influence));
+        }
+        // also use most recent burst as light source approximation
+        if (bursts.length) {
+            const lastBurst = bursts[bursts.length - 1];
+            const pb = lastBurst.points.geometry.getAttribute('position');
+            if (pb.count) {
+                const bx = pb.array[0], by = pb.array[1], bz = pb.array[2];
+                const d2b = Math.max(0.25, center.distanceToSquared(new THREE.Vector3(bx, by, bz)));
+                const infl = 2.0 / d2b; // stronger but localized
+                barLight += infl;
+                barColor.add(lastBurst.points.material.color.clone().multiplyScalar(infl));
+            }
+        }
+        if (barLight > 0) barColor.multiplyScalar(1 / barLight);
         for (let j = 0; j < positions.count; j += 1) {
             // gentle drag and rise
             velocities.array[j * 3] = velocities.array[j * 3] * 0.996 + THREE.MathUtils.randFloatSpread(0.004);
@@ -626,11 +671,13 @@ function animate(t) {
         positions.needsUpdate = true;
         ages.needsUpdate = true;
         const k = THREE.MathUtils.clamp(s.life / 5.0, 0, 1);
-        // Stay very transparent; blur out while spreading even larger
-        s.cloud.material.opacity = 0.14 * k + 0.12 * s.lightK; // stronger colored light term
+        // Stay transparent; make it easier to see overall
+        const barBoost = THREE.MathUtils.clamp(barLight * 1.2, 0, 0.35);
+        s.cloud.material.opacity = 0.18 * k + 0.12 * s.lightK + barBoost * 0.4;
         s.cloud.material.size = 0.55 + (1 - k) * 2.0;
-        // Lighting tint: base dark gray with pronounced colored highlight
-        s.cloud.material.color.copy(s.baseColor).lerp(s.light, Math.min(1.0, s.lightK));
+        // Lighting tint: combine explosion color and average bar color
+        const combinedLight = s.light.clone().lerp(barColor, 0.6);
+        s.cloud.material.color.copy(s.baseColor).lerp(combinedLight, Math.min(1.0, s.lightK + barBoost));
         if (s.life <= 0) {
             scene.remove(s.cloud);
             s.cloud.geometry.dispose();
@@ -642,17 +689,41 @@ function animate(t) {
     // Auto fireworks removed; driven by spectral flux beats
 
     // fade out trail dots
-    for (let i = trailSprites.length - 1; i >= 0; i -= 1) {
-        const t = trailSprites[i];
-        t.life -= 0.02;
-        t.sprite.material.opacity = Math.max(0, t.life);
-        const s = Math.max(0, t.sprite.scale.x - 0.002);
-        t.sprite.scale.setScalar(s);
-        if (t.life <= 0) {
-            scene.remove(t.sprite);
-            t.sprite.material.map?.dispose?.();
-            t.sprite.material.dispose();
-            trailSprites.splice(i, 1);
+    for (let i = embers.length - 1; i >= 0; i -= 1) {
+        const e = embers[i];
+        e.life -= 0.02;
+        e.vel.y -= GRAVITY * 0.02;
+        e.sprite.position.x += e.vel.x * 0.02;
+        e.sprite.position.y += e.vel.y * 0.02;
+        e.sprite.position.z += e.vel.z * 0.02;
+        // color progression: rocket hue -> orange/red -> gray -> black
+        const tNorm = 1 - Math.max(0, e.life / e.lifeMax);
+        let col = new THREE.Color();
+        if (tNorm < 0.35) {
+            col.setHSL(e.baseHue, 0.9, 0.7);
+        } else if (tNorm < 0.6) {
+            const k = (tNorm - 0.35) / 0.25;
+            // orange/red with flicker
+            const flicker = Math.random() < 0.5 ? 0.0 : 0.4;
+            col.setHSL(0.05 + 0.03 * k, 1.0, 0.5 - 0.12 * k + flicker * 0.05);
+            e.sprite.material.opacity *= Math.random() < 0.5 ? 0.85 : 1.0;
+        } else if (tNorm < 0.9) {
+            const k = (tNorm - 0.6) / 0.3;
+            col.setRGB(1 - k, 1 - k, 1 - k).multiplyScalar(0.5); // to gray
+        } else {
+            col.setRGB(0, 0, 0);
+        }
+        e.sprite.material.color.copy(col);
+        // Make gray stage less transparent than orange stage
+        const opacityCurve = tNorm < 0.6 ? (e.life / e.lifeMax) : Math.max(0.2, e.life / e.lifeMax);
+        e.sprite.material.opacity = Math.max(0, opacityCurve);
+        const sScale = Math.max(0, e.sprite.scale.x - 0.0015);
+        e.sprite.scale.setScalar(sScale);
+        if (e.life <= 0) {
+            scene.remove(e.sprite);
+            e.sprite.material.map?.dispose?.();
+            e.sprite.material.dispose();
+            embers.splice(i, 1);
         }
     }
 
@@ -784,7 +855,7 @@ function togglePlay() {
         state.isPlaying = true;
     } else {
         audioEl.pause();
-        playBtn.textContent = '▶️';
+        playBtn.textContent = '⏵';
         state.isPlaying = false;
     }
 }
