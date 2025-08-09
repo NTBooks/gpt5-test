@@ -64,7 +64,7 @@ renderer.toneMappingExposure = 1.1;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x0b0d10, 0.035);
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / (window.innerHeight - 56), 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / (window.innerHeight - 56), 0.1, 3000);
 camera.position.set(0, 8, 18);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -87,7 +87,12 @@ controls.addEventListener('end', () => { lastUserInputMs = performance.now(); })
 
 let zoomFreezeUntil = 0;
 let lastDist = 18;
-const GRAVITY = 0.06; // gravity constant for ember sprites
+const GRAVITY = 0.12; // stronger gravity accel per frame for visible fall (units/s^2 approx)
+// Wind system
+let wind = new THREE.Vector3(0, 0, 0);
+let windTarget = new THREE.Vector3(0, 0, 0);
+let windLastChange = 0;
+let windNextChangeMs = 0;
 
 // Postprocessing: afterimage trails + bloom for fat glows
 const composer = new EffectComposer(renderer);
@@ -110,21 +115,23 @@ const dir = new THREE.DirectionalLight(0x5af8ff, 0.8);
 dir.position.set(5, 10, 7);
 scene.add(dir);
 
-// Reflective pool
-const poolSize = 100;
+// Reflective pool (larger so it feels infinite)
+const poolSize = 1000;
 const reflector = new Reflector(new THREE.PlaneGeometry(poolSize, poolSize), {
-    textureWidth: 1024,
-    textureHeight: 1024,
-    color: 0x101318,
+    textureWidth: 1536,
+    textureHeight: 1536,
+    color: 0x20242b, // dimmer tint to reduce harsh horizon seam
+    clipBias: 0.003,
 });
 reflector.rotation.x = -Math.PI / 2;
 scene.add(reflector);
 
-// Subtle grid for horizon
-const grid = new THREE.GridHelper(poolSize, 40, 0x3a3f55, 0x1a2030);
-grid.material.opacity = 0.18;
-grid.material.transparent = true;
-scene.add(grid);
+// Clearcoat sheen layer just above the reflector to smooth the horizon and add a wet look
+// Clearcoat sheen layer removed due to flicker
+
+// Floor grid removed
+const grid = new THREE.GridHelper(poolSize, 200, 0x3a3f55, 0x1a2030);
+grid.visible = false;
 
 // VU bars (resin-like, larger, spaced in a semicircle)
 const barsGroup = new THREE.Group();
@@ -285,6 +292,48 @@ const cloudMat = new THREE.ShaderMaterial({
 const cloudDome = new THREE.Mesh(new THREE.SphereGeometry(170, 64, 64), cloudMat);
 scene.add(cloudDome);
 
+// Distant jagged mountains ring (background mesh)
+function createMountainRing(radius = 1800, segments = 512) {
+    const geom = new THREE.BufferGeometry();
+    const vertices = [];
+    const indices = [];
+    const groundY = -18;
+    for (let i = 0; i <= segments; i++) {
+        const t = i / segments;
+        const ang = t * Math.PI * 2;
+        const r = radius + THREE.MathUtils.randFloat(-80, 120);
+        const x = Math.cos(ang) * r;
+        const z = Math.sin(ang) * r;
+        // height profile: jagged with multiple octaves
+        const n = Math.sin(i * 0.19) * 60 + Math.sin(i * 0.53) * 40 + Math.sin(i * 0.91) * 25;
+        const y = groundY + 140 + n;
+        // top vertex
+        vertices.push(x, y, z);
+        // base vertex (toward ground)
+        vertices.push(x, groundY, z);
+        if (i > 0) {
+            const a = (i - 1) * 2;
+            const b = (i - 1) * 2 + 1;
+            const c = i * 2;
+            const d = i * 2 + 1;
+            // two triangles per segment (a,b,c) and (b,d,c)
+            indices.push(a, b, c, b, d, c);
+        }
+    }
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geom.setIndex(indices);
+    geom.computeVertexNormals();
+    const shade = 0.16;
+    const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(shade, shade * 1.02, shade * 1.05), roughness: 1.0, metalness: 0.0, flatShading: true });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.receiveShadow = false;
+    mesh.castShadow = false;
+    return mesh;
+}
+const mountains = createMountainRing();
+mountains.name = 'background-mountains';
+scene.add(mountains);
+
 // Fireworks system (3dfx vibe): rockets + additive burst sparks + ember trails
 const rockets = [];
 const bursts = [];
@@ -318,7 +367,17 @@ function launchRocket(x, hue = Math.random(), z = 0) {
     scene.add(mesh);
     const angle = Math.random() * Math.PI * 2;
     const speed = THREE.MathUtils.randFloat(0.2, 1.2);
-    rockets.push({ mesh, vx: Math.cos(angle) * speed, vy: THREE.MathUtils.randFloat(6, 11), vz: Math.sin(angle) * speed, life: THREE.MathUtils.randFloat(0.9, 1.6), hue });
+    rockets.push({
+        mesh,
+        vx: Math.cos(angle) * speed,
+        vy: THREE.MathUtils.randFloat(6, 11),
+        vz: Math.sin(angle) * speed,
+        life: THREE.MathUtils.randFloat(0.9, 1.6),
+        hue,
+        turn: THREE.MathUtils.randFloat(-0.02, 0.02), // horizontal curvature
+        curvePull: THREE.MathUtils.randFloat(0.0005, 0.003), // gentle inward pull to center
+        launchMs: performance.now()
+    });
 }
 
 function explodeAt(position, hue) {
@@ -356,7 +415,10 @@ function explodeAt(position, hue) {
     const points = new THREE.Points(geom, mat);
     points.renderOrder = 20;
     scene.add(points);
-    bursts.push({ points, life: 1.8, drag: 0.985 });
+    bursts.push({ points, life: 1.8, drag: 0.985, pos: position.clone(), col: color.clone() });
+
+    // Push away the tops of nearby rocket ember trails
+    blastTopEmbers(position, 4.0, 1.6);
 
     // Smoke plume illuminated by explosion; trail outward following a fraction of spark velocity
     spawnSmoke(position, color, velocities);
@@ -364,7 +426,7 @@ function explodeAt(position, hue) {
 
 function spawnTrailDot(position, hue) { spawnEmber(position, hue); }
 
-function spawnEmber(position, hue, vel) {
+function spawnEmber(position, hue, vel, lifeOverride) {
     const mat = new THREE.SpriteMaterial({
         map: circleTexture,
         color: new THREE.Color().setHSL(hue, 0.9, 0.85),
@@ -379,11 +441,34 @@ function spawnEmber(position, hue, vel) {
     sprite.scale.setScalar(s);
     sprite.renderOrder = 25;
     scene.add(sprite);
-    const v = vel ? vel.clone().multiplyScalar(0.08) : new THREE.Vector3();
-    v.x += THREE.MathUtils.randFloatSpread(0.06);
-    v.y += THREE.MathUtils.randFloatSpread(0.02);
-    v.z += THREE.MathUtils.randFloatSpread(0.06);
-    embers.push({ sprite, life: 1.6, lifeMax: 1.6, vel: v, baseHue: hue });
+    const v = vel ? vel.clone().multiplyScalar(0.05) : new THREE.Vector3();
+    // reduce forward carry and bias slightly downward
+    v.y = Math.min(v.y, 0.4) - 0.15;
+    v.x += THREE.MathUtils.randFloatSpread(0.03);
+    v.z += THREE.MathUtils.randFloatSpread(0.03);
+    const lifeMax = lifeOverride ?? 1.6;
+    embers.push({ sprite, life: lifeMax, lifeMax, vel: v, baseHue: hue });
+}
+
+// Apply an outward/upward impulse to nearby embers that are at the top of trails near the explosion
+function blastTopEmbers(origin, radius = 4.0, strength = 1.6) {
+    for (let i = 0; i < embers.length; i += 1) {
+        const e = embers[i];
+        const p = e.sprite.position;
+        // Only affect embers near the explosion height and with relatively fresh life (top of trail)
+        if (p.y < origin.y - 0.8) continue;
+        if (e.life < e.lifeMax * 0.4) continue;
+        const d = p.distanceTo(origin);
+        if (d > radius) continue;
+        const dir = p.clone().sub(origin);
+        // Bias upward a little so they lift off the trail tip
+        dir.y = Math.abs(dir.y) + 0.5;
+        if (dir.lengthSq() === 0) dir.set(0, 1, 0);
+        dir.normalize();
+        const falloff = 1 - (d / radius);
+        const impulse = strength * falloff;
+        e.vel.addScaledVector(dir, impulse);
+    }
 }
 
 function spawnSmoke(origin, explosionColor, baseVelocities) {
@@ -473,11 +558,31 @@ const tmpSpherical = new THREE.Spherical();
 let desiredRadius = 16;
 let desiredAzim = 0.0; // target orbit angle
 let desiredPolar = 0.9;
+let cameraMode = 'orbit';
+let followTarget = null; // rocket to follow
+let followCooldown = 0; // ms timestamp until we can pick a new rocket
+let followReleaseAt = 0; // time when current follow rocket ended
+const followCamPos = new THREE.Vector3(-7.8, -1.9, 1.9); // fixed follow vantage relative to world origin
+let lastBeatAt = 0; // ms timestamp of last beat
+let trailsPulseUntil = 0; // ms timestamp until which trails are pulsed
+const organicSeed = Math.random() * 1000;
+let followZoom = 0; // cumulative zoom-in amount toward the rocket while tracking
+const followZoomMax = 5.0; // max units to slide toward target along view vector
 function animate(t) {
     requestAnimationFrame(animate);
 
     analyser.getByteFrequencyData(frequencyData);
     analyser.getByteTimeDomainData(timeData);
+
+    // Wind update: change target every few seconds and lerp toward it
+    if (t > windNextChangeMs) {
+        windLastChange = t;
+        windNextChangeMs = t + THREE.MathUtils.randInt(3000, 7000);
+        const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
+        const speed = THREE.MathUtils.randFloat(0.0, 0.8); // magnitude
+        windTarget.set(Math.cos(angle) * speed, 0, Math.sin(angle) * speed);
+    }
+    wind.lerp(windTarget, 0.02);
 
     const len = barsGroup.children.length;
     let peak = 0;
@@ -494,7 +599,9 @@ function animate(t) {
         avg += v;
         const mat = bar.material;
         // Keep the bar color visible; modulate emissive softly
-        mat.emissiveIntensity = 0.7 + v * 1.5;
+        const baseEmissive = 0.7 + v * 1.5; // minimum stays as-is
+        const heightBoost = Math.max(0, h - 1.2) * 0.08; // brighter as the bar rises
+        mat.emissiveIntensity = baseEmissive + heightBoost;
         mat.opacity = 0.95;
     }
     avg /= len;
@@ -529,6 +636,8 @@ function animate(t) {
     const fluxStd = Math.sqrt(fluxVar + 1e-6);
     const beat = flux > fluxAvg + 2.2 * fluxStd; // sensitivity
     if (beat && t - lastFluxFire > 350) {
+        lastBeatAt = t;
+        trailsPulseUntil = t + 600; // pulse trails for 0.6s on beat
         const hue = Math.random();
         const count = 2 + Math.floor(Math.random() * 3);
         for (let i = 0; i < count; i += 1) {
@@ -541,40 +650,114 @@ function animate(t) {
         lastFluxFire = t;
     }
 
-    // Dynamic camera: keep target near center, adjust distance softly; let OrbitControls handle rotation
-    const centerY = 2 + avg * 2.5;
-    tmpTarget.set(0, centerY, 0);
-    // If user recently interacted, don't tug the camera/target strongly
+    // Camera modes
     const sinceInput = performance.now() - lastUserInputMs;
-    const lerpAmt = sinceInput < 1200 ? 0.01 : 0.05;
-    controls.target.lerp(tmpTarget, lerpAmt);
-    desiredAzim += 0.003;
-    controls.autoRotate = sinceInput > 1200; // pause auto orbit briefly after input
-    controls.autoRotateSpeed = 0.2 + avg * 0.6;
-    const currentDist = camera.position.distanceTo(controls.target);
-    // If user changed distance, capture it and freeze easing for a while
-    if (Math.abs(currentDist - lastDist) > 0.05) {
-        zoomFreezeUntil = performance.now() + 8000; // 8s freeze window
-        lastDist = currentDist;
+    if (cameraMode === 'user') {
+        // User-controlled camera: do not move/auto-rotate
+        controls.autoRotate = false;
+        controls.enableRotate = true;
+        // Intentionally do not modify controls.target or camera.position
+        controls.update();
+    } else if (cameraMode === 'center') {
+        // fixed at center looking straight up
+        controls.autoRotate = false;
+        controls.enableRotate = false;
+        controls.target.set(0, 4, 0);
+        // Move camera further below ground for a dramatic bottom-up view
+        camera.position.lerp(new THREE.Vector3(0, -6, 0), 0.08);
+        camera.lookAt(new THREE.Vector3(0, 8, 0));
+    } else if (cameraMode === 'follow') {
+        // follow latest rocket; keep lock until it finishes (life <=0)
+        if (!followTarget || followTarget.life <= 0) {
+            if (followTarget && followTarget.life <= 0) {
+                followReleaseAt = performance.now();
+                followTarget = null;
+            }
+            if (performance.now() > followCooldown && performance.now() > followReleaseAt + 1000) {
+                // pick the newest rocket near the ground
+                const candidates = rockets.filter(r => r.life > 0 && r.mesh.position.y < 1.5);
+                if (candidates.length) {
+                    candidates.sort((a, b) => b.launchMs - a.launchMs);
+                    followTarget = candidates[0];
+                    followCooldown = performance.now() + 1000; // enforce 1s before next retarget
+                }
+            }
+        }
+        if (followTarget && followTarget.life > 0) {
+            const targetPos = followTarget.mesh.position;
+            // organic handheld: small noise-based jitter
+            const jt = (performance.now() + organicSeed * 1000) * 0.0015;
+            const jitter = new THREE.Vector3(
+                Math.sin(jt * 0.9) * 0.08 + Math.sin(jt * 1.7) * 0.04,
+                Math.sin(jt * 1.3) * 0.05,
+                Math.cos(jt * 1.1) * 0.06
+            );
+            // Ease-out cumulative zoom toward the rocket along view vector
+            const toTarget = new THREE.Vector3().subVectors(targetPos, followCamPos).normalize();
+            const beatAmt = Math.max(0, 1 - (performance.now() - lastBeatAt) / 600);
+            followZoom = Math.min(followZoomMax, followZoom + 0.08 + beatAmt * 0.12);
+            const desiredPos = followCamPos.clone().add(jitter).add(toTarget.multiplyScalar(followZoom));
+            camera.position.lerp(desiredPos, 0.15); // ease-out-ish (small lerp)
+            // look roughly toward center with bias to rocket
+            const gaze = new THREE.Vector3().copy(targetPos).multiplyScalar(0.7).add(new THREE.Vector3(0, 0, 0).multiplyScalar(0.3));
+            controls.target.lerp(gaze, 0.15);
+            camera.lookAt(controls.target);
+            controls.autoRotate = false;
+            controls.enableRotate = false;
+        } else {
+            // remain in follow mode: hold current camera pose until a new rocket appears
+            controls.autoRotate = false;
+            controls.enableRotate = false;
+            followZoom = 0; // reset for next rocket
+        }
+    } else {
+        // orbit mode around the arena high up looking down
+        controls.enableRotate = true;
+        const centerY = 2 + avg * 2.5;
+        tmpTarget.set(0, centerY, 0);
+        const lerpAmt = sinceInput < 1200 ? 0.01 : 0.05;
+        controls.target.lerp(tmpTarget, lerpAmt);
+        desiredAzim += 0.0025;
+        controls.autoRotate = true; // always orbit in this mode
+        controls.autoRotateSpeed = 0.35 + avg * 0.4; // faster orbit
+        const currentDist = camera.position.distanceTo(controls.target);
+        if (Math.abs(currentDist - lastDist) > 0.05) {
+            zoomFreezeUntil = performance.now() + 8000;
+            lastDist = currentDist;
+        }
+        const targetDistRaw = arcRadius * 1.1 - rms * 1.2; // higher/wider
+        const targetDist = THREE.MathUtils.clamp(targetDistRaw, arcRadius * 0.8, arcRadius * 1.6);
+        const distLerp = performance.now() < zoomFreezeUntil ? 0.0 : (sinceInput < 1200 ? 0.01 : 0.03);
+        const newDist = THREE.MathUtils.lerp(currentDist, targetDist, distLerp);
+        tmpCamOffset.copy(camera.position).sub(controls.target).setLength(newDist);
+        camera.position.copy(controls.target).add(tmpCamOffset);
+        controls.update();
     }
-    const targetDistRaw = arcRadius * 0.6 - rms * 1.5;
-    const targetDist = THREE.MathUtils.clamp(targetDistRaw, arcRadius * 0.3, arcRadius * 1.2);
-    const distLerp = performance.now() < zoomFreezeUntil ? 0.0 : (sinceInput < 1200 ? 0.01 : 0.03);
-    const newDist = THREE.MathUtils.lerp(currentDist, targetDist, distLerp);
-    tmpCamOffset.copy(camera.position).sub(controls.target).setLength(newDist);
-    camera.position.copy(controls.target).add(tmpCamOffset);
-    controls.update();
 
     // update rockets
     for (let i = rockets.length - 1; i >= 0; i -= 1) {
         const r = rockets[i];
+        // curved ascent: apply slight horizontal turn and inward pull
+        const dirH = new THREE.Vector2(r.vx, r.vz);
+        const angleH = Math.atan2(dirH.y, dirH.x) + r.turn;
+        const speedH = dirH.length();
+        r.vx = Math.cos(angleH) * speedH;
+        r.vz = Math.sin(angleH) * speedH;
+        // pull toward center
+        r.vx += (-r.mesh.position.x) * r.curvePull;
+        r.vz += (-r.mesh.position.z) * r.curvePull;
         r.vy -= 0.03; // gravity
+        // wind influence on rocket trail path
+        r.vx += wind.x * 0.005;
+        r.vz += wind.z * 0.005;
         r.mesh.position.x += r.vx * 0.02;
         r.mesh.position.y += r.vy * 0.02;
         r.mesh.position.z += r.vz * 0.02;
         r.life -= 0.02;
-        // ember trail along the rocket path
-        spawnEmber(r.mesh.position, r.hue, new THREE.Vector3(r.vx, r.vy, r.vz));
+        // ember trail along the rocket path (denser and with strong fall)
+        if (Math.random() < 0.8) {
+            spawnEmber(r.mesh.position, r.hue, new THREE.Vector3(r.vx, r.vy, r.vz));
+        }
         r.mesh.material.color.offsetHSL(0, 0, Math.sin(performance.now() * 0.01) * 0.02);
         if (r.life <= 0 || r.vy <= 0) {
             const pos = r.mesh.position.clone();
@@ -634,7 +817,7 @@ function animate(t) {
         const positions = s.cloud.geometry.getAttribute('position');
         const velocities = s.cloud.geometry.getAttribute('velocity');
         const ages = s.cloud.geometry.getAttribute('age');
-        // compute lighting from bars and recent explosions using inverse-square falloff
+        // compute lighting from bars and recent explosions using inverse-square falloff with distance+size attenuation
         let barLight = 0; let barColor = new THREE.Color(0x000000);
         const center = new THREE.Vector3();
         center.fromBufferAttribute(positions, 0);
@@ -645,17 +828,13 @@ function animate(t) {
             barLight += influence;
             barColor.add(bar.material.color.clone().multiplyScalar(influence));
         }
-        // also use most recent burst as light source approximation
-        if (bursts.length) {
-            const lastBurst = bursts[bursts.length - 1];
-            const pb = lastBurst.points.geometry.getAttribute('position');
-            if (pb.count) {
-                const bx = pb.array[0], by = pb.array[1], bz = pb.array[2];
-                const d2b = Math.max(0.25, center.distanceToSquared(new THREE.Vector3(bx, by, bz)));
-                const infl = 2.0 / d2b; // stronger but localized
-                barLight += infl;
-                barColor.add(lastBurst.points.material.color.clone().multiplyScalar(infl));
-            }
+        // also use a few recent bursts as light sources
+        for (let bi = Math.max(0, bursts.length - 3); bi < bursts.length; bi += 1) {
+            const burst = bursts[bi];
+            const d2b = Math.max(0.25, center.distanceToSquared(burst.pos));
+            const infl = 2.0 / d2b; // stronger but localized
+            barLight += infl;
+            barColor.add(burst.col.clone().multiplyScalar(infl));
         }
         if (barLight > 0) barColor.multiplyScalar(1 / barLight);
         for (let j = 0; j < positions.count; j += 1) {
@@ -671,9 +850,11 @@ function animate(t) {
         positions.needsUpdate = true;
         ages.needsUpdate = true;
         const k = THREE.MathUtils.clamp(s.life / 5.0, 0, 1);
-        // Stay transparent; make it easier to see overall
-        const barBoost = THREE.MathUtils.clamp(barLight * 1.2, 0, 0.35);
-        s.cloud.material.opacity = 0.18 * k + 0.12 * s.lightK + barBoost * 0.4;
+        // Stay transparent; make it easier to see overall. Farther smoke gets less lighting (distance) and bigger size reduces responsiveness
+        const distanceAtten = 1.0 / (1.0 + center.length() * 0.12);
+        const sizeAtten = 1.0 / (1.0 + (s.cloud.material.size || 1) * 0.6);
+        const barBoost = THREE.MathUtils.clamp(barLight * 1.2 * distanceAtten * sizeAtten, 0, 0.35);
+        s.cloud.material.opacity = 0.18 * k + 0.12 * s.lightK + barBoost * 0.35;
         s.cloud.material.size = 0.55 + (1 - k) * 2.0;
         // Lighting tint: combine explosion color and average bar color
         const combinedLight = s.light.clone().lerp(barColor, 0.6);
@@ -692,7 +873,10 @@ function animate(t) {
     for (let i = embers.length - 1; i >= 0; i -= 1) {
         const e = embers[i];
         e.life -= 0.02;
-        e.vel.y -= GRAVITY * 0.02;
+        // exaggerated gravity for embers so they fall swiftly
+        e.vel.x += wind.x * 0.03;
+        e.vel.z += wind.z * 0.03;
+        e.vel.y -= GRAVITY * 0.15;
         e.sprite.position.x += e.vel.x * 0.02;
         e.sprite.position.y += e.vel.y * 0.02;
         e.sprite.position.z += e.vel.z * 0.02;
@@ -717,8 +901,16 @@ function animate(t) {
         // Make gray stage less transparent than orange stage
         const opacityCurve = tNorm < 0.6 ? (e.life / e.lifeMax) : Math.max(0.2, e.life / e.lifeMax);
         e.sprite.material.opacity = Math.max(0, opacityCurve);
-        const sScale = Math.max(0, e.sprite.scale.x - 0.0015);
+        const sScale = Math.max(0, e.sprite.scale.x - 0.002);
         e.sprite.scale.setScalar(sScale);
+        // occasional fork: spawn a child ember with reduced life and diverging velocity
+        if (e.life > 0.6 && Math.random() < 0.06) {
+            const childV = e.vel.clone();
+            childV.x += THREE.MathUtils.randFloatSpread(0.08);
+            childV.y += THREE.MathUtils.randFloatSpread(0.04) - 0.02;
+            childV.z += THREE.MathUtils.randFloatSpread(0.08);
+            spawnEmber(e.sprite.position, e.baseHue, childV, e.life * 0.5);
+        }
         if (e.life <= 0) {
             scene.remove(e.sprite);
             e.sprite.material.map?.dispose?.();
@@ -732,26 +924,143 @@ function animate(t) {
 requestAnimationFrame(animate);
 
 // Drag & drop (robust: prevent default on multiple targets)
-const dropzone = qs('#dropzone');
-function showDropzone(show) {
-    dropzone.classList.toggle('hidden', !show);
-    dropzone.classList.toggle('grid', show);
-    dropzone.style.pointerEvents = show ? 'auto' : 'none';
-}
+// Drawer + playlist UI
+const playlistToggle = qs('#playlist-toggle');
+const playlistOverlay = qs('#playlist-overlay');
+const playlistDrawer = qs('#playlist-drawer');
+const playlistClose = qs('#playlist-close');
+const drawerDropzone = qs('#playlist-dropzone');
+const drawerDropHint = qs('#drawer-drop-hint');
+const optionsToggle = qs('#options-toggle');
+const optionsOverlay = qs('#options-overlay');
+const optionsDrawer = qs('#options-drawer');
+const optionsClose = qs('#options-close');
+const cameraToggle = qs('#camera-toggle');
+const cameraToast = qs('#camera-toast');
+const cameraToastText = qs('#camera-toast-text');
+const cameraHud = qs('#camera-hud');
 const preventDefaults = (e) => { e.preventDefault(); e.stopPropagation(); };
-function onDragEnter(e) { preventDefaults(e); showDropzone(true); }
-function onDragOver(e) { preventDefaults(e); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; showDropzone(true); }
-function onDragLeave(e) { preventDefaults(e); showDropzone(false); }
-function onDrop(e) { preventDefaults(e); const files = e.dataTransfer?.files; if (files && files.length) handleFiles(files); showDropzone(false); }
 
-const dndTargets = [window, document, document.body, canvas];
-dndTargets.forEach((t) => {
-    if (!t) return;
-    t.addEventListener('dragenter', onDragEnter);
-    t.addEventListener('dragover', onDragOver);
-    t.addEventListener('dragleave', onDragLeave);
-    t.addEventListener('drop', onDrop);
+function openDrawer() {
+    playlistOverlay.classList.remove('hidden');
+    playlistDrawer.classList.remove('translate-x-full');
+}
+function closeDrawer() {
+    playlistOverlay.classList.add('hidden');
+    playlistDrawer.classList.add('translate-x-full');
+}
+playlistToggle?.addEventListener('click', openDrawer);
+playlistOverlay?.addEventListener('click', closeDrawer);
+playlistClose?.addEventListener('click', closeDrawer);
+
+function openOptions() {
+    optionsOverlay.classList.remove('hidden');
+    optionsDrawer.classList.remove('-translate-x-full');
+}
+function closeOptions() {
+    optionsOverlay.classList.add('hidden');
+    optionsDrawer.classList.add('-translate-x-full');
+}
+optionsToggle?.addEventListener('click', openOptions);
+optionsOverlay?.addEventListener('click', closeOptions);
+optionsClose?.addEventListener('click', closeOptions);
+
+// Camera cycle button
+const cameraModes = ['user', 'orbit', 'follow', 'center'];
+cameraToggle?.addEventListener('click', () => {
+    const idx = cameraModes.indexOf(cameraMode);
+    const next = cameraModes[(idx + 1) % cameraModes.length];
+    cameraMode = next;
+    if (cameraModeSelect) cameraModeSelect.value = next;
+    // show toast
+    if (cameraToast && cameraToastText) {
+        cameraToastText.textContent = {
+            user: 'Camera: User', orbit: 'Camera: Orbit', follow: 'Camera: Follow', center: 'Camera: Center Up'
+        }[next];
+        cameraToast.classList.remove('opacity-0');
+        cameraToast.classList.add('opacity-100');
+        setTimeout(() => {
+            cameraToast.classList.remove('opacity-100');
+            cameraToast.classList.add('opacity-0');
+        }, 900);
+    }
+    persistOptions();
+    persistOptions();
 });
+
+// Local storage persistence
+function persistOptions() {
+    try {
+        localStorage.setItem('vv_bloom', String(bloomPass.enabled));
+        localStorage.setItem('vv_trails', String(afterimagePass.enabled));
+        localStorage.setItem('vv_camera_mode', cameraMode);
+        const pose = { pos: camera.position.toArray(), tgt: controls.target.toArray() };
+        localStorage.setItem('vv_camera_pose', JSON.stringify(pose));
+    } catch (_) { }
+}
+
+function restoreOptions() {
+    try {
+        const bloom = localStorage.getItem('vv_bloom');
+        if (bloom !== null && toggleBloom) { const b = bloom === 'true'; bloomPass.enabled = b; toggleBloom.checked = b; }
+        const trails = localStorage.getItem('vv_trails');
+        if (trails !== null && toggleAfter) {
+            const t = trails === 'true'; afterimagePass.enabled = t; afterimagePass.uniforms['damp'].value = t ? 0.96 : 1.0; toggleAfter.checked = t; renderer.autoClear = !t;
+        }
+        const mode = localStorage.getItem('vv_camera_mode');
+        if (mode && cameraModeSelect) { cameraMode = mode; cameraModeSelect.value = mode; }
+        const poseStr = localStorage.getItem('vv_camera_pose');
+        if (poseStr) {
+            const p = JSON.parse(poseStr);
+            if (Array.isArray(p.pos) && Array.isArray(p.tgt)) {
+                camera.position.fromArray(p.pos);
+                controls.target.fromArray(p.tgt);
+                controls.update();
+            }
+        } else {
+            // Default starting camera pose
+            const pos = new THREE.Vector3(0.59, 2.59, 20.78);
+            const yawDeg = -178.4;
+            const pitchDeg = 3.9;
+            const yaw = THREE.MathUtils.degToRad(yawDeg);
+            const pitch = THREE.MathUtils.degToRad(pitchDeg);
+            const dir = new THREE.Vector3(
+                Math.sin(yaw) * Math.cos(pitch),
+                Math.sin(pitch),
+                Math.cos(yaw) * Math.cos(pitch)
+            );
+            camera.position.copy(pos);
+            controls.target.copy(pos.clone().add(dir.multiplyScalar(10)));
+            controls.update();
+        }
+    } catch (_) { }
+}
+
+restoreOptions();
+
+// Camera HUD update and clipboard copy
+function updateCameraHud() {
+    const hud = document.getElementById('camera-hud');
+    if (!hud) return;
+    const pos = camera.position;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const yaw = Math.atan2(dir.x, dir.z) * 180 / Math.PI;
+    const pitch = Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)) * 180 / Math.PI;
+    hud.textContent = `Pos: ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)} | Yaw: ${yaw.toFixed(1)}° | Pitch: ${pitch.toFixed(1)}°`;
+}
+setInterval(updateCameraHud, 120);
+document.getElementById('camera-hud')?.addEventListener('click', async () => {
+    const hud = document.getElementById('camera-hud');
+    if (!hud) return;
+    try { await navigator.clipboard.writeText(hud.textContent || ''); } catch (_) { }
+});
+
+// Drag/drop only over drawer region
+drawerDropzone?.addEventListener('dragenter', (e) => { preventDefaults(e); drawerDropHint.classList.remove('hidden'); drawerDropHint.classList.add('grid'); });
+drawerDropzone?.addEventListener('dragover', (e) => { preventDefaults(e); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; });
+drawerDropzone?.addEventListener('dragleave', (e) => { preventDefaults(e); drawerDropHint.classList.add('hidden'); drawerDropHint.classList.remove('grid'); });
+drawerDropzone?.addEventListener('drop', (e) => { preventDefaults(e); const files = e.dataTransfer?.files; if (files && files.length) handleFiles(files); drawerDropHint.classList.add('hidden'); drawerDropHint.classList.remove('grid'); });
 
 function handleFiles(fileList) {
     const files = Array.from(fileList).filter((f) => /\.(flac|wav|mp3|m4a)$/i.test(f.name));
@@ -781,6 +1090,7 @@ const browseBtn = qs('#browse-btn');
 const fileInput = qs('#file-input');
 const toggleAfter = qs('#toggle-afterimage');
 const toggleBloom = qs('#toggle-bloom');
+const cameraModeSelect = qs('#camera-mode');
 
 playBtn.addEventListener('click', () => {
     if (state.currentIndex === -1 && state.tracks.length) playAtIndex(0);
@@ -826,7 +1136,7 @@ function renderPlaylist() {
     ul.innerHTML = '';
     state.tracks.forEach((t, i) => {
         const li = document.createElement('li');
-        li.className = 'chip' + (i === state.currentIndex ? ' chip-active' : '');
+        li.className = 'cursor-pointer rounded-md border border-white/10 px-2 py-1 text-xs hover:bg-white/10 ' + (i === state.currentIndex ? ' bg-white/20' : '');
         li.textContent = t.name.replace(/\.[^.]+$/, '');
         li.title = t.name;
         li.addEventListener('click', () => playAtIndex(i));
@@ -874,11 +1184,14 @@ if (browseBtn && fileInput) {
 // Load defaults on startup
 loadDefaultTracks();
 
-// Afterimage toggle
+// Afterimage toggle (default disabled)
 if (toggleAfter) {
+    afterimagePass.uniforms['damp'].value = 1.0;
+    afterimagePass.enabled = false;
+    renderer.autoClear = true;
+    toggleAfter.checked = false;
     toggleAfter.addEventListener('change', () => {
         const enabled = toggleAfter.checked;
-        // Ensure clearing happens when trails are off
         afterimagePass.uniforms['damp'].value = enabled ? 0.96 : 1.0;
         afterimagePass.enabled = enabled;
         renderer.autoClear = !enabled;
@@ -886,8 +1199,26 @@ if (toggleAfter) {
     });
 }
 if (toggleBloom) {
+    bloomPass.enabled = true;
+    toggleBloom.checked = true;
     toggleBloom.addEventListener('change', () => {
         bloomPass.enabled = toggleBloom.checked;
+    });
+}
+
+if (cameraModeSelect) {
+    cameraModeSelect.addEventListener('change', () => {
+        cameraMode = cameraModeSelect.value;
+        followTarget = null;
+        followCooldown = 0;
+        controls.enableRotate = true;
+        controls.autoRotate = cameraMode === 'orbit';
+        if (cameraMode === 'user') {
+            // Don't auto-move; leave camera where the user set it
+            controls.autoRotate = false;
+            controls.enableRotate = true;
+        }
+        persistOptions();
     });
 }
 

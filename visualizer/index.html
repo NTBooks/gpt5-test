@@ -49,7 +49,12 @@
             <div class="text-lg font-semibold tracking-wide">VaporVU</div>
         </div>
         <div class="flex items-center gap-2 text-xs text-white/60">
-            <span>Drag & drop .flac files to play</span>
+            <button id="camera-toggle"
+                class="rounded-md border border-white/10 bg-white/10 px-2 py-1 text-xs hover:bg-white/20">📷</button>
+            <button id="options-toggle"
+                class="rounded-md border border-white/10 bg-white/10 px-2 py-1 text-xs hover:bg-white/20">⚙</button>
+            <button id="playlist-toggle"
+                class="rounded-md border border-white/10 bg-white/10 px-3 py-1 text-xs hover:bg-white/20">Playlist</button>
         </div>
     </header>
 
@@ -58,27 +63,12 @@
         <section class="relative">
             <canvas id="three-canvas" class="absolute inset-0 h-full w-full"></canvas>
 
-            <!-- Particles overlay is inside WebGL; this overlay only for drag-drop and hud -->
-            <div id="dropzone"
-                class="absolute inset-0 hidden place-items-center rounded-xl border-2 border-dashed border-white/30 bg-black/40 backdrop-blur-md">
-                <div class="pointer-events-none grid place-items-center gap-2 p-6 text-center">
-                    <div class="text-2xl font-semibold">Drop audio files</div>
-                    <div class="text-white/70">FLAC recommended. Multiple files create a playlist.</div>
-                </div>
-            </div>
+            <!-- Removed global dropzone; drop is handled in the playlist drawer region -->
 
-            <!-- Minimal HUD (now-playing + toggles) -->
+            <!-- Minimal HUD (now-playing only) -->
             <div
                 class="absolute left-3 top-3 flex items-center gap-3 rounded-lg bg-black/30 px-3 py-2 text-xs backdrop-blur-md ring-1 ring-white/10">
                 <div id="now-playing" class="max-w-[50vw] truncate">No track loaded</div>
-                <label class="flex items-center gap-1 whitespace-nowrap">
-                    <input id="toggle-afterimage" type="checkbox" checked class="accent-white" />
-                    Trails
-                </label>
-                <label class="flex items-center gap-1 whitespace-nowrap">
-                    <input id="toggle-bloom" type="checkbox" checked class="accent-white" />
-                    Bloom
-                </label>
             </div>
         </section>
 
@@ -98,17 +88,85 @@
             </div>
 
             <!-- Playlist -->
-            <div class="flex min-w-0 items-center gap-2 overflow-x-auto">
-                <button id="browse-btn"
-                    class="rounded-md border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/20">Browse
-                    files</button>
-                <input id="file-input" type="file" accept=".flac,.wav,.mp3,.m4a" multiple class="hidden" />
-                <ul id="playlist" class="flex min-w-0 gap-2"></ul>
-            </div>
+            <div class="flex min-w-0 items-center gap-2 overflow-x-auto"></div>
         </section>
     </main>
 
     <audio id="audio" crossorigin="anonymous"></audio>
+
+    <!-- Center toast for camera view name -->
+    <div id="camera-toast"
+        class="pointer-events-none fixed inset-0 z-[60] grid place-items-center opacity-0 transition-opacity duration-700">
+        <div id="camera-toast-text" class="rounded-lg bg-black/60 px-4 py-2 text-sm ring-1 ring-white/10">Camera</div>
+    </div>
+
+    <!-- Left options drawer -->
+    <div id="options-overlay" class="fixed inset-0 z-40 hidden bg-black/50"></div>
+    <aside id="options-drawer"
+        class="fixed left-0 top-0 z-50 h-full w-72 max-w-[90vw] -translate-x-full border-r border-white/10 bg-[#0b0d10]/95 backdrop-blur-xl transition-transform">
+        <div class="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <h3 class="text-sm font-semibold">Options</h3>
+            <button id="options-close" class="control-btn">✕</button>
+        </div>
+        <div class="p-4 grid gap-3 text-xs">
+            <label class="flex items-center justify-between gap-3">
+                <span>Trails</span>
+                <input id="toggle-afterimage" type="checkbox" class="accent-white" />
+            </label>
+            <label class="flex items-center justify-between gap-3">
+                <span>Bloom</span>
+                <input id="toggle-bloom" type="checkbox" class="accent-white" />
+            </label>
+            <div class="grid gap-1">
+                <span>Camera</span>
+                <select id="camera-mode"
+                    class="rounded-md bg-black/40 text-white text-xs border border-white/10 px-2 py-1">
+                    <option value="orbit">Orbit</option>
+                    <option value="follow">Follow</option>
+                    <option value="center">Center Up</option>
+                    <option value="user">User</option>
+                </select>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Center toast for camera view name -->
+    <div id="camera-toast"
+        class="pointer-events-none fixed inset-0 z-[60] grid place-items-center opacity-0 transition-opacity duration-700">
+        <div id="camera-toast-text" class="rounded-lg bg-black/60 px-4 py-2 text-sm ring-1 ring-white/10">Camera</div>
+    </div>
+
+    <!-- Bottom-right camera HUD -->
+    <div id="camera-hud"
+        class="pointer-events-auto fixed bottom-24 right-3 z-[55] rounded bg-black/40 px-2 py-1 text-[11px] text-white/60 ring-1 ring-white/10 cursor-pointer">
+        Pos: 0,0,0 | Yaw: 0° | Pitch: 0°
+    </div>
+
+    <!-- Right playlist drawer -->
+    <div id="playlist-overlay" class="fixed inset-0 z-40 hidden bg-black/50"></div>
+    <aside id="playlist-drawer"
+        class="fixed right-0 top-0 z-50 h-full w-80 max-w-[90vw] translate-x-full border-l border-white/10 bg-[#0b0d10]/95 backdrop-blur-xl transition-transform">
+        <div class="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <h3 class="text-sm font-semibold">Playlist</h3>
+            <button id="playlist-close" class="control-btn">✕</button>
+        </div>
+        <div id="playlist-dropzone" class="relative grid h-[calc(100%-48px)] grid-rows-[auto_1fr_auto]">
+            <div class="flex items-center gap-2 p-3">
+                <button id="browse-btn"
+                    class="rounded-md border border-white/10 bg-white/10 px-3 py-2 text-xs hover:bg-white/20">Browse
+                    files</button>
+                <input id="file-input" type="file" accept=".flac,.wav,.mp3,.m4a" multiple class="hidden" />
+            </div>
+            <ul id="playlist" class="overflow-y-auto p-3 space-y-1"></ul>
+            <div id="drawer-drop-hint"
+                class="pointer-events-none absolute inset-0 hidden place-items-center rounded-none border-2 border-dashed border-white/30 bg-black/40 backdrop-blur-md">
+                <div class="pointer-events-none grid place-items-center gap-2 p-6 text-center">
+                    <div class="text-lg font-semibold">Drop audio files</div>
+                    <div class="text-white/70">Add tracks to this playlist</div>
+                </div>
+            </div>
+        </div>
+    </aside>
 
     <script type="module" src="/app.js"></script>
 </body>
