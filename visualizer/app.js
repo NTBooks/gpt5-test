@@ -1,3 +1,17 @@
+// Popper: single bright flare that falls, emits smoke, and globally brightens clouds briefly
+function explodePopper(position, hue) {
+    // Single flare sprite
+    const flareMat = new THREE.SpriteMaterial({ map: circleTexture, color: new THREE.Color(0xffffff), transparent: true, opacity: 1.0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    const flare = new THREE.Sprite(flareMat);
+    flare.position.copy(position);
+    flare.scale.set(1.6, 1.6, 1.6);
+    scene.add(flare);
+    const vel = new THREE.Vector3(THREE.MathUtils.randFloatSpread(0.12), -THREE.MathUtils.randFloat(1.0, 1.6), THREE.MathUtils.randFloatSpread(0.12));
+    flares.push({ sprite: flare, vel, life: 1.8, maxLife: 1.8 });
+
+    // Global cloud brightening effect
+    globalCloudFlashUntil = performance.now() + 1500; // 1.5s
+}
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Reflector } from 'three/examples/jsm/objects/Reflector.js';
@@ -43,7 +57,7 @@ async function loadDefaultTracks() {
     } catch (_) { /* ignore in production build */ }
     try {
         // Also include any files colocated in src for completeness
-        const assets = import.meta.glob(['./*.mp3', './*.wav', './*.flac', './*.m4a'], { as: 'url', eager: true });
+        const assets = import.meta.glob(['./*.mp3', './*.wav', './*.flac', './*.m4a'], { query: '?url', import: 'default', eager: true });
         const entries = Object.entries(assets).sort((a, b) => a[0].localeCompare(b[0]));
         entries.forEach(([path, url]) => state.tracks.push({ name: path.replace(/^\.\//, ''), url }));
     } catch (_) { }
@@ -293,20 +307,20 @@ const cloudDome = new THREE.Mesh(new THREE.SphereGeometry(170, 64, 64), cloudMat
 scene.add(cloudDome);
 
 // Distant jagged mountains ring (background mesh)
-function createMountainRing(radius = 1800, segments = 512) {
+function createMountainRing(radius = 1500, segments = 640) {
     const geom = new THREE.BufferGeometry();
     const vertices = [];
     const indices = [];
-    const groundY = -18;
+    const groundY = -20;
     for (let i = 0; i <= segments; i++) {
         const t = i / segments;
         const ang = t * Math.PI * 2;
-        const r = radius + THREE.MathUtils.randFloat(-80, 120);
+        const r = radius + THREE.MathUtils.randFloat(-200, 200);
         const x = Math.cos(ang) * r;
         const z = Math.sin(ang) * r;
-        // height profile: jagged with multiple octaves
-        const n = Math.sin(i * 0.19) * 60 + Math.sin(i * 0.53) * 40 + Math.sin(i * 0.91) * 25;
-        const y = groundY + 140 + n;
+        // height profile: jagged with multiple octaves (taller, more pronounced)
+        const n = Math.sin(i * 0.19) * 120 + Math.sin(i * 0.53) * 80 + Math.sin(i * 0.91) * 50;
+        const y = groundY + 240 + n;
         // top vertex
         vertices.push(x, y, z);
         // base vertex (toward ground)
@@ -323,7 +337,7 @@ function createMountainRing(radius = 1800, segments = 512) {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
     geom.setIndex(indices);
     geom.computeVertexNormals();
-    const shade = 0.16;
+    const shade = 0.22;
     const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(shade, shade * 1.02, shade * 1.05), roughness: 1.0, metalness: 0.0, flatShading: true });
     const mesh = new THREE.Mesh(geom, mat);
     mesh.receiveShadow = false;
@@ -337,9 +351,42 @@ scene.add(mountains);
 // Fireworks system (3dfx vibe): rockets + additive burst sparks + ember trails
 const rockets = [];
 const bursts = [];
+const flashes = [];
+const flares = [];
 const trailSprites = [];
 const embers = [];
 const smokes = [];
+
+// Global caps for performance
+const LIMITS = {
+    maxBurstParticles: 8000,
+    maxSmokeParticles: 2500,
+    maxEmbers: 700,
+    maxRockets: 6,
+};
+
+// Options state (persisted)
+const OPTIONS = {
+    windEnabled: true,
+    smokeLifeScale: 1.0,
+    enabledExplosions: { classic: true, ballLarge: true, ring: true, sparkle: true, bicolor: true, popper: true },
+};
+
+function totalBurstParticles() {
+    let n = 0;
+    for (let i = 0; i < bursts.length; i += 1) {
+        n += bursts[i].points.geometry.getAttribute('position').count;
+    }
+    return n;
+}
+
+function totalSmokeParticles() {
+    let n = 0;
+    for (let i = 0; i < smokes.length; i += 1) {
+        n += smokes[i].cloud.geometry.getAttribute('position').count;
+    }
+    return n;
+}
 
 function createCircleTexture(size = 64) {
     const canvas = document.createElement('canvas');
@@ -358,6 +405,8 @@ function createCircleTexture(size = 64) {
 const circleTexture = createCircleTexture();
 
 function launchRocket(x, hue = Math.random(), z = 0) {
+    if (rockets.length >= LIMITS.maxRockets) return;
+    if (totalBurstParticles() > LIMITS.maxBurstParticles) return;
     const color = new THREE.Color().setHSL(hue, 0.8, 0.6);
     const geom = new THREE.SphereGeometry(0.12, 8, 8);
     const mat = new THREE.MeshBasicMaterial({ color, toneMapped: false });
@@ -376,14 +425,54 @@ function launchRocket(x, hue = Math.random(), z = 0) {
         hue,
         turn: THREE.MathUtils.randFloat(-0.02, 0.02), // horizontal curvature
         curvePull: THREE.MathUtils.randFloat(0.0005, 0.003), // gentle inward pull to center
-        launchMs: performance.now()
+        launchMs: performance.now(),
+        nextSmokeAt: 0,
+        smokeEmitted: 0,
+        maxSmoke: 28,
     });
 }
 
-function explodeAt(position, hue) {
-    const count = 400;
+function explodeAt(position, hue, type) {
+    const kind = type || pickExplosionType();
+    if (kind === 'classic') return explodeClassic(position, hue);
+    if (kind === 'ballLarge') return explodeBallLarge(position, hue);
+    if (kind === 'ring') return explodeRingRandomPlane(position, hue);
+    if (kind === 'sparkle') return explodeSparkleFlash(position, hue);
+    if (kind === 'bicolor') return explodeBiColorBall(position, hue);
+    if (kind === 'popper') return explodePopper(position, hue);
+    return explodeClassic(position, hue);
+}
+
+function pickExplosionType() {
+    // Adjusted weights: classic/ball most common, ring medium, bicolor more common, sparkle low, popper rare
+    const all = [
+        ['classic', 0.33],
+        ['ballLarge', 0.29],
+        ['ring', 0.16],
+        ['bicolor', 0.18],
+        ['sparkle', 0.03],
+        ['popper', 0.01],
+    ];
+    let filtered = all.filter(([name]) => OPTIONS.enabledExplosions[name]);
+    // Never spawn more than one popper at a time
+    if (flares.length > 0) filtered = filtered.filter(([name]) => name !== 'popper');
+    const totalW = filtered.reduce((s, [, w]) => s + w, 0) || 1;
+    const r = Math.random() * totalW;
+    let acc = 0;
+    for (let i = 0; i < filtered.length; i += 1) {
+        acc += filtered[i][1];
+        if (r <= acc) return filtered[i][0];
+    }
+    return filtered[0]?.[0] || 'classic';
+}
+
+// Original/classic simple spherical explosion
+function explodeClassic(position, hue) {
+    let count = 180;
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
+    const allowed = Math.max(0, LIMITS.maxBurstParticles - totalBurstParticles());
+    if (allowed < count) count = Math.max(100, Math.floor(allowed));
     for (let i = 0; i < count; i += 1) {
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.acos(THREE.MathUtils.randFloatSpread(1));
@@ -401,7 +490,7 @@ function explodeAt(position, hue) {
     const color = new THREE.Color().setHSL(hue, 0.85, 0.6);
     const mat = new THREE.PointsMaterial({
         color,
-        size: 0.12,
+        size: 0.22,
         sizeAttenuation: true,
         transparent: true,
         opacity: 1.0,
@@ -416,12 +505,212 @@ function explodeAt(position, hue) {
     points.renderOrder = 20;
     scene.add(points);
     bursts.push({ points, life: 1.8, drag: 0.985, pos: position.clone(), col: color.clone() });
-
-    // Push away the tops of nearby rocket ember trails
     blastTopEmbers(position, 4.0, 1.6);
-
-    // Smoke plume illuminated by explosion; trail outward following a fraction of spark velocity
     spawnSmoke(position, color, velocities);
+}
+
+// Large single-color ball that expands and hangs before fading
+function explodeBallLarge(position, hue) {
+    const count = 220;
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    for (let i = 0; i < count; i += 1) {
+        const theta = Math.random() * Math.PI * 2;
+        const u = Math.random() * 2 - 1; // cos(phi)
+        const phi = Math.acos(u);
+        const speed = THREE.MathUtils.randFloat(6.0, 12.0);
+        const sx = Math.sin(phi) * Math.cos(theta) * speed;
+        const sy = Math.cos(phi) * speed;
+        const sz = Math.sin(phi) * Math.sin(theta) * speed;
+        velocities[i * 3] = sx;
+        velocities[i * 3 + 1] = sy;
+        velocities[i * 3 + 2] = sz;
+        positions[i * 3] = position.x;
+        positions[i * 3 + 1] = position.y;
+        positions[i * 3 + 2] = position.z;
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+    const color = new THREE.Color().setHSL(hue, 0.85, 0.6);
+    const mat = new THREE.PointsMaterial({
+        color,
+        size: 0.24,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        fog: false,
+        map: circleTexture,
+        alphaMap: circleTexture,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.renderOrder = 20;
+    scene.add(points);
+    bursts.push({ points, life: 2.2, lifeMax: 2.2, drag: 0.94, gravity: 0.18, pos: position.clone(), col: color.clone(), sizeStart: 0.22, sizeEnd: 0.12, type: 'ballLarge' });
+    blastTopEmbers(position, 5.0, 2.2);
+    spawnSmoke(position, color, velocities, { count: 220, size: 0.65, opacity: 0.16, life: 6.0 });
+}
+
+// Ring in a random plane with two colors (colored + white components)
+function explodeRingRandomPlane(position, hue) {
+    let count = 64; // fewer pearls
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const normal = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.8 + 0.2, Math.random() - 0.5).normalize();
+    // orthonormal basis (u, v, normal)
+    const u = new THREE.Vector3(0, 1, 0).cross(normal);
+    if (u.lengthSq() < 1e-6) u.set(1, 0, 0).cross(normal);
+    u.normalize();
+    const v = new THREE.Vector3().crossVectors(normal, u).normalize();
+    const radius = THREE.MathUtils.randFloat(3.2, 4.0);
+    const colorA = new THREE.Color().setHSL(hue, 0.9, 0.6);
+    const colorB = new THREE.Color(0xffffff);
+    // Respect burst particle budget
+    const allowed = Math.max(0, LIMITS.maxBurstParticles - totalBurstParticles());
+    if (allowed < count) count = Math.max(24, Math.floor(allowed));
+    for (let i = 0; i < count; i += 1) {
+        const t = (i / count) * Math.PI * 2;
+        const dir = new THREE.Vector3().copy(u).multiplyScalar(Math.cos(t)).add(new THREE.Vector3().copy(v).multiplyScalar(Math.sin(t)));
+        const p = new THREE.Vector3().copy(position).addScaledVector(dir, radius);
+        positions[i * 3] = p.x; positions[i * 3 + 1] = p.y; positions[i * 3 + 2] = p.z;
+        const speed = THREE.MathUtils.randFloat(2.2, 3.5);
+        velocities[i * 3] = dir.x * speed;
+        velocities[i * 3 + 1] = dir.y * speed;
+        velocities[i * 3 + 2] = dir.z * speed;
+        // alternate white and color for a clear string-of-pearls look
+        const useWhite = (i % 2 === 0);
+        const c = useWhite ? colorB : colorA;
+        colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.PointsMaterial({
+        size: 0.24, // larger brighter pearls
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        fog: false,
+        vertexColors: true,
+        map: circleTexture,
+        alphaMap: circleTexture,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.renderOrder = 22;
+    scene.add(points);
+    bursts.push({ points, life: 1.6, lifeMax: 1.6, drag: 0.986, gravity: 0.18, pos: position.clone(), col: colorA.clone(), sizeStart: 0.26, sizeEnd: 0.20, type: 'ring' });
+    blastTopEmbers(position, 4.0, 1.6);
+    // lighter smoke for rings to avoid perf spikes
+    spawnSmoke(position, colorA, velocities, { count: 60, size: 0.5, opacity: 0.12, life: 2.6 });
+}
+
+// Flash with tiny sparkles that fall down after exploding
+function explodeSparkleFlash(position, hue) {
+    // bright flash sprite
+    const flashMat = new THREE.SpriteMaterial({ map: circleTexture, color: new THREE.Color(0xffffff), transparent: true, opacity: 1.0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    const flash = new THREE.Sprite(flashMat);
+    flash.position.copy(position);
+    flash.scale.set(2.5, 2.5, 2.5);
+    scene.add(flash);
+    flashes.push({ sprite: flash, life: 0.16 });
+
+    // tiny sparkles that fall
+    const count = 600;
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    // Force pure white sparkles for maximum brightness
+    const color = new THREE.Color(0xffffff);
+    for (let i = 0; i < count; i += 1) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(THREE.MathUtils.randFloatSpread(1));
+        const speed = THREE.MathUtils.randFloat(1.0, 3.0);
+        velocities[i * 3] = Math.sin(phi) * Math.cos(theta) * speed;
+        velocities[i * 3 + 1] = Math.cos(phi) * speed * 0.7; // less upward
+        velocities[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * speed;
+        positions[i * 3] = position.x;
+        positions[i * 3 + 1] = position.y;
+        positions[i * 3 + 2] = position.z;
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+    const mat = new THREE.PointsMaterial({
+        color,
+        size: 0.10,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        fog: false,
+        map: circleTexture,
+        alphaMap: circleTexture,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.renderOrder = 23;
+    scene.add(points);
+    bursts.push({ points, life: 1.4, lifeMax: 1.4, drag: 0.98, gravity: 0.6, pos: position.clone(), col: color.clone(), sizeStart: 0.07, sizeEnd: 0.04, type: 'sparkle', twinkle: true });
+    blastTopEmbers(position, 3.5, 1.4);
+    spawnSmoke(position, color, velocities, { count: 80, size: 0.5, opacity: 0.12, life: 3.5 });
+}
+
+// Bi-color ball: two hemispheres with different colors
+function explodeBiColorBall(position, hue) {
+    const count = 260;
+    const positions = new Float32Array(count * 3);
+    const velocities = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const axis = new THREE.Vector3(Math.random() - 0.5, Math.random(), Math.random() - 0.5).normalize();
+    const colorA = new THREE.Color().setHSL(hue, 0.9, 0.6);
+    const hue2 = (hue + 0.15) % 1.0;
+    const colorB = new THREE.Color().setHSL(hue2, 0.9, 0.6);
+    for (let i = 0; i < count; i += 1) {
+        const theta = Math.random() * Math.PI * 2;
+        const u = Math.random() * 2 - 1;
+        const phi = Math.acos(u);
+        const dir = new THREE.Vector3(
+            Math.sin(phi) * Math.cos(theta),
+            Math.cos(phi),
+            Math.sin(phi) * Math.sin(theta)
+        );
+        const speed = THREE.MathUtils.randFloat(3.5, 8.0);
+        velocities[i * 3] = dir.x * speed; velocities[i * 3 + 1] = dir.y * speed; velocities[i * 3 + 2] = dir.z * speed;
+        positions[i * 3] = position.x; positions[i * 3 + 1] = position.y; positions[i * 3 + 2] = position.z;
+        const c = dir.dot(axis) >= 0 ? colorA : colorB;
+        colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+    geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.PointsMaterial({
+        size: 0.24,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+        fog: false,
+        vertexColors: true,
+        map: circleTexture,
+        alphaMap: circleTexture,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.renderOrder = 21;
+    scene.add(points);
+    bursts.push({ points, life: 1.9, lifeMax: 1.9, drag: 0.972, gravity: 0.24, pos: position.clone(), col: colorA.clone(), sizeStart: 0.20, sizeEnd: 0.12, type: 'bicolor' });
+    blastTopEmbers(position, 5.0, 1.8);
+    spawnSmoke(position, colorA, velocities, { count: 180, size: 0.62, opacity: 0.15, life: 5.5 });
 }
 
 function spawnTrailDot(position, hue) { spawnEmber(position, hue); }
@@ -447,7 +736,7 @@ function spawnEmber(position, hue, vel, lifeOverride) {
     v.x += THREE.MathUtils.randFloatSpread(0.03);
     v.z += THREE.MathUtils.randFloatSpread(0.03);
     const lifeMax = lifeOverride ?? 1.6;
-    embers.push({ sprite, life: lifeMax, lifeMax, vel: v, baseHue: hue });
+    embers.push({ sprite, life: lifeMax, lifeMax, vel: v, baseHue: hue, nextSmokeAt: performance.now() + THREE.MathUtils.randInt(80, 180) });
 }
 
 // Apply an outward/upward impulse to nearby embers that are at the top of trails near the explosion
@@ -471,8 +760,8 @@ function blastTopEmbers(origin, radius = 4.0, strength = 1.6) {
     }
 }
 
-function spawnSmoke(origin, explosionColor, baseVelocities) {
-    const count = 120;
+function spawnSmoke(origin, explosionColor, baseVelocities, opts = {}) {
+    const count = Math.floor(opts.count ?? 120);
     const positions = new Float32Array(count * 3);
     const velocities = new Float32Array(count * 3);
     const ages = new Float32Array(count);
@@ -504,16 +793,24 @@ function spawnSmoke(origin, explosionColor, baseVelocities) {
         map: smokeTex,
         alphaMap: smokeTex,
         color: c,
-        size: 0.55,
+        size: opts.size ?? 0.55,
         transparent: true,
-        opacity: 0.14,
+        opacity: opts.opacity ?? 0.14,
         depthWrite: false,
         blending: THREE.NormalBlending,
         toneMapped: false,
     });
     const cloud = new THREE.Points(geom, mat);
     cloud.renderOrder = 5;
-    scene.add(cloud);
+    // Respect global smoke cap; if above, skip adding this smoke
+    if (totalSmokeParticles() + count <= LIMITS.maxSmokeParticles) {
+        scene.add(cloud);
+    } else {
+        // dispose immediately
+        geom.dispose();
+        mat.dispose();
+        return;
+    }
     // Precompute average velocity to approximate a center drift
     let vx = 0, vy = 0, vz = 0;
     for (let i = 0; i < count; i += 1) {
@@ -524,13 +821,32 @@ function spawnSmoke(origin, explosionColor, baseVelocities) {
     vx /= count; vy /= count; vz /= count;
     smokes.push({
         cloud,
-        life: 5.0,
+        life: Math.min((opts.life ?? 5.0) * (OPTIONS.smokeLifeScale || 1.0), 6.0),
+        totalLife: (opts.life ?? 5.0) * (OPTIONS.smokeLifeScale || 1.0),
         light: explosionColor.clone(),
         baseColor: c,
         lightK: 1.4,
         center: origin.clone(),
         vAvg: new THREE.Vector3(vx, vy, vz),
+        sizeStart: opts.size ?? 0.55,
+        sizeEnd: opts.sizeEnd ?? ((opts.size ?? 0.55) + 2.0),
     });
+}
+
+// Narrow smoke puff for rocket trails (single small cloud)
+// Lightweight rocket puff: single tiny smoke cloud with minimal particles
+function spawnRocketPuff(origin, hue, initialVel) {
+    const count = 1; // single smoke particle
+    const velocities = new Float32Array(count * 3);
+    for (let i = 0; i < count; i += 1) {
+        // minimal lateral spread; slight upward drift
+        velocities[i * 3] = (initialVel?.x || 0) * 0.006 + THREE.MathUtils.randFloatSpread(0.002);
+        velocities[i * 3 + 1] = (initialVel?.y || 0) * 0.003 + THREE.MathUtils.randFloat(0.0005, 0.002);
+        velocities[i * 3 + 2] = (initialVel?.z || 0) * 0.006 + THREE.MathUtils.randFloatSpread(0.002);
+    }
+    const color = new THREE.Color(0x222222);
+    // smaller, to read as a thin line
+    spawnSmoke(origin, color, velocities, { count, size: 0.09, opacity: 0.08, life: 2.2 });
 }
 
 // Resize
@@ -568,21 +884,30 @@ let trailsPulseUntil = 0; // ms timestamp until which trails are pulsed
 const organicSeed = Math.random() * 1000;
 let followZoom = 0; // cumulative zoom-in amount toward the rocket while tracking
 const followZoomMax = 5.0; // max units to slide toward target along view vector
+// FPS stats
+let lastFpsUpdate = 0;
+let frames = 0;
+let fps = 0;
+let globalCloudFlashUntil = 0;
 function animate(t) {
     requestAnimationFrame(animate);
+
+    // FPS accumulation
+    frames += 1;
+    if (t - lastFpsUpdate > 500) { fps = Math.round((frames * 1000) / (t - lastFpsUpdate)); frames = 0; lastFpsUpdate = t; }
 
     analyser.getByteFrequencyData(frequencyData);
     analyser.getByteTimeDomainData(timeData);
 
     // Wind update: change target every few seconds and lerp toward it
-    if (t > windNextChangeMs) {
+    if (OPTIONS.windEnabled && t > windNextChangeMs) {
         windLastChange = t;
         windNextChangeMs = t + THREE.MathUtils.randInt(3000, 7000);
         const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
         const speed = THREE.MathUtils.randFloat(0.0, 0.8); // magnitude
         windTarget.set(Math.cos(angle) * speed, 0, Math.sin(angle) * speed);
     }
-    wind.lerp(windTarget, 0.02);
+    if (OPTIONS.windEnabled) wind.lerp(windTarget, 0.02); else wind.setScalar(0);
 
     const len = barsGroup.children.length;
     let peak = 0;
@@ -618,6 +943,13 @@ function animate(t) {
     particlesMat.opacity = THREE.MathUtils.clamp(0.25 + rms * 0.6, 0.2, 0.8);
     particlesMat.size = THREE.MathUtils.lerp(particlesMat.size, 0.06 + rms * 0.14, 0.2);
     cloudUniforms.uTime.value = t * 0.001;
+    // brief global flash when popper active
+    if (performance.now() < globalCloudFlashUntil) {
+        const k = (globalCloudFlashUntil - performance.now()) / 1500;
+        cloudUniforms.uIntensity.value = 0.55 + 1.6 * Math.max(0, k);
+    } else {
+        cloudUniforms.uIntensity.value = 0.55;
+    }
 
     // Spectral flux (on-beat detection)
     let flux = 0;
@@ -758,6 +1090,18 @@ function animate(t) {
         if (Math.random() < 0.8) {
             spawnEmber(r.mesh.position, r.hue, new THREE.Vector3(r.vx, r.vy, r.vz));
         }
+        // Up to N small rocket puffs per rocket, then stop (performance-safe)
+        if (r.vy > 0.6 && r.life > 0.25 && r.smokeEmitted < r.maxSmoke) {
+            if (performance.now() > (r.nextSmokeAt || 0)) {
+                r.nextSmokeAt = performance.now() + THREE.MathUtils.randInt(8, 14);
+                r.smokeEmitted += 1;
+                // place puff slightly behind the rocket along its path, with minimal lateral jitter
+                const vel = new THREE.Vector3(r.vx, r.vy, r.vz);
+                const back = vel.lengthSq() > 0 ? vel.clone().normalize().multiplyScalar(-0.02) : new THREE.Vector3(0, -0.02, 0);
+                const p = r.mesh.position.clone().add(back);
+                spawnRocketPuff(p, r.hue, vel);
+            }
+        }
         r.mesh.material.color.offsetHSL(0, 0, Math.sin(performance.now() * 0.01) * 0.02);
         if (r.life <= 0 || r.vy <= 0) {
             const pos = r.mesh.position.clone();
@@ -776,16 +1120,26 @@ function animate(t) {
         const positions = b.points.geometry.getAttribute('position');
         const velocities = b.points.geometry.getAttribute('velocity');
         for (let j = 0; j < positions.count; j += 1) {
-            // drag + gravity
+            // drag + gravity (per type)
             velocities.array[j * 3] *= b.drag;
-            velocities.array[j * 3 + 1] = velocities.array[j * 3 + 1] * b.drag - GRAVITY * 0.33;
+            const gy = b.gravity != null ? b.gravity : 0.33;
+            velocities.array[j * 3 + 1] = velocities.array[j * 3 + 1] * b.drag - GRAVITY * gy;
             velocities.array[j * 3 + 2] *= b.drag;
             positions.array[j * 3] += velocities.array[j * 3] * 0.02;
             positions.array[j * 3 + 1] += velocities.array[j * 3 + 1] * 0.02;
             positions.array[j * 3 + 2] += velocities.array[j * 3 + 2] * 0.02;
         }
         positions.needsUpdate = true;
-        b.points.material.opacity = Math.max(0, b.life);
+        // size/opacity evolution by type
+        const k = THREE.MathUtils.clamp(b.life / (b.lifeMax || 1.8), 0, 1);
+        if (b.points.material.size !== undefined && b.sizeStart && b.sizeEnd) {
+            b.points.material.size = THREE.MathUtils.lerp(b.sizeEnd, b.sizeStart, k);
+        }
+        if (b.twinkle) {
+            b.points.material.opacity = Math.max(0, b.life) * (Math.random() < 0.5 ? 0.8 : 1.0);
+        } else {
+            b.points.material.opacity = Math.max(0.0, b.life);
+        }
         // spawn embers from explosion particles occasionally
         if (Math.random() < 0.1) {
             const idx = Math.floor(Math.random() * positions.count);
@@ -809,10 +1163,26 @@ function animate(t) {
         }
     }
 
+    // update flashes
+    for (let i = flashes.length - 1; i >= 0; i -= 1) {
+        const f = flashes[i];
+        f.life -= 0.04;
+        f.sprite.material.opacity = Math.max(0, f.life * 6);
+        f.sprite.scale.multiplyScalar(0.98);
+        if (f.life <= 0) {
+            scene.remove(f.sprite);
+            f.sprite.material.map?.dispose?.();
+            f.sprite.material.dispose();
+            flashes.splice(i, 1);
+        }
+    }
+
     // update smoke: drift outward, gentle rise, fast blur+fade; lit by explosions and bars (inverse-square)
     for (let i = smokes.length - 1; i >= 0; i -= 1) {
         const s = smokes[i];
-        s.life -= 0.015; // slower fade overall
+        // Dissipate faster in stronger wind
+        const windMag = wind.length();
+        s.life -= 0.015 + windMag * 0.01; // base + wind-based dissipation
         s.lightK *= 0.90; // keep lighting around a bit longer and stronger
         const positions = s.cloud.geometry.getAttribute('position');
         const velocities = s.cloud.geometry.getAttribute('velocity');
@@ -836,12 +1206,17 @@ function animate(t) {
             barLight += infl;
             barColor.add(burst.col.clone().multiplyScalar(infl));
         }
+        // Popper global brightening makes smoke glow white
+        if (performance.now() < globalCloudFlashUntil) {
+            barLight += 3.0;
+            barColor.add(new THREE.Color(0xffffff).multiplyScalar(3.0));
+        }
         if (barLight > 0) barColor.multiplyScalar(1 / barLight);
         for (let j = 0; j < positions.count; j += 1) {
-            // gentle drag and rise
-            velocities.array[j * 3] = velocities.array[j * 3] * 0.996 + THREE.MathUtils.randFloatSpread(0.004);
+            // gentle drag and rise; wind advection
+            velocities.array[j * 3] = velocities.array[j * 3] * 0.996 + wind.x * 0.02 + THREE.MathUtils.randFloatSpread(0.004);
             velocities.array[j * 3 + 1] = velocities.array[j * 3 + 1] * 0.996 + 0.0006; // very subtle lift
-            velocities.array[j * 3 + 2] = velocities.array[j * 3 + 2] * 0.996 + THREE.MathUtils.randFloatSpread(0.004);
+            velocities.array[j * 3 + 2] = velocities.array[j * 3 + 2] * 0.996 + wind.z * 0.02 + THREE.MathUtils.randFloatSpread(0.004);
             positions.array[j * 3] += velocities.array[j * 3] * 0.02;
             positions.array[j * 3 + 1] += velocities.array[j * 3 + 1] * 0.02;
             positions.array[j * 3 + 2] += velocities.array[j * 3 + 2] * 0.02;
@@ -849,13 +1224,16 @@ function animate(t) {
         }
         positions.needsUpdate = true;
         ages.needsUpdate = true;
-        const k = THREE.MathUtils.clamp(s.life / 5.0, 0, 1);
+        const fullLife = s.totalLife || 5.0;
+        const k = THREE.MathUtils.clamp(s.life / fullLife, 0, 1);
         // Stay transparent; make it easier to see overall. Farther smoke gets less lighting (distance) and bigger size reduces responsiveness
         const distanceAtten = 1.0 / (1.0 + center.length() * 0.12);
         const sizeAtten = 1.0 / (1.0 + (s.cloud.material.size || 1) * 0.6);
         const barBoost = THREE.MathUtils.clamp(barLight * 1.2 * distanceAtten * sizeAtten, 0, 0.35);
-        s.cloud.material.opacity = 0.18 * k + 0.12 * s.lightK + barBoost * 0.35;
-        s.cloud.material.size = 0.55 + (1 - k) * 2.0;
+        s.cloud.material.opacity = 0.10 * k + 0.12 * s.lightK + barBoost * 0.35;
+        const startSize = s.sizeStart || 0.55;
+        const endSize = s.sizeEnd || (startSize + 2.0);
+        s.cloud.material.size = THREE.MathUtils.lerp(endSize, startSize, k);
         // Lighting tint: combine explosion color and average bar color
         const combinedLight = s.light.clone().lerp(barColor, 0.6);
         s.cloud.material.color.copy(s.baseColor).lerp(combinedLight, Math.min(1.0, s.lightK + barBoost));
@@ -911,6 +1289,15 @@ function animate(t) {
             childV.z += THREE.MathUtils.randFloatSpread(0.08);
             spawnEmber(e.sprite.position, e.baseHue, childV, e.life * 0.5);
         }
+        // occasional fork: spawn a child ember with reduced life and diverging velocity
+        if (e.life > 0.6 && Math.random() < 0.06) {
+            const childV = e.vel.clone();
+            childV.x += THREE.MathUtils.randFloatSpread(0.08);
+            childV.y += THREE.MathUtils.randFloatSpread(0.04) - 0.02;
+            childV.z += THREE.MathUtils.randFloatSpread(0.08);
+            spawnEmber(e.sprite.position, e.baseHue, childV, e.life * 0.5);
+        }
+        // Ember smoke disabled to keep puff count bounded (rocket puffs handle the trail)
         if (e.life <= 0) {
             scene.remove(e.sprite);
             e.sprite.material.map?.dispose?.();
@@ -919,7 +1306,37 @@ function animate(t) {
         }
     }
 
+    // update flares (popper)
+    for (let i = flares.length - 1; i >= 0; i -= 1) {
+        const f = flares[i];
+        f.life -= 0.02;
+        // gravity + slight drag
+        f.vel.y -= GRAVITY * 0.12;
+        f.vel.multiplyScalar(0.995);
+        f.sprite.position.addScaledVector(f.vel, 0.02);
+        f.sprite.material.opacity = Math.max(0, f.life);
+        // emit a small white smoke particle that floats upward while burning
+        if (Math.random() < 0.5) {
+            const upVel = new Float32Array(3);
+            upVel[0] = 0; upVel[1] = THREE.MathUtils.randFloat(0.02, 0.06); upVel[2] = 0;
+            spawnSmoke(f.sprite.position.clone(), new THREE.Color(0xffffff), upVel, { count: 1, size: 0.18, opacity: 0.1, life: 2.0 });
+        }
+        if (f.life <= 0) {
+            scene.remove(f.sprite);
+            f.sprite.material.map?.dispose?.();
+            f.sprite.material.dispose();
+            flares.splice(i, 1);
+        }
+    }
+
     composer.render();
+
+    // Update stats HUD
+    if (statsHud) {
+        const burstsCount = totalBurstParticles();
+        const smokeCount = totalSmokeParticles();
+        statsHud.textContent = `FPS: ${fps} | Bursts: ${burstsCount} | Smoke: ${smokeCount} | Embers: ${embers.length} | Rockets: ${rockets.length}`;
+    }
 }
 requestAnimationFrame(animate);
 
@@ -939,6 +1356,7 @@ const cameraToggle = qs('#camera-toggle');
 const cameraToast = qs('#camera-toast');
 const cameraToastText = qs('#camera-toast-text');
 const cameraHud = qs('#camera-hud');
+const statsHud = qs('#stats-hud');
 const preventDefaults = (e) => { e.preventDefault(); e.stopPropagation(); };
 
 function openDrawer() {
@@ -956,10 +1374,14 @@ playlistClose?.addEventListener('click', closeDrawer);
 function openOptions() {
     optionsOverlay.classList.remove('hidden');
     optionsDrawer.classList.remove('-translate-x-full');
+    cameraHud?.classList.remove('hidden');
+    statsHud?.classList.remove('hidden');
 }
 function closeOptions() {
     optionsOverlay.classList.add('hidden');
     optionsDrawer.classList.add('-translate-x-full');
+    cameraHud?.classList.add('hidden');
+    statsHud?.classList.add('hidden');
 }
 optionsToggle?.addEventListener('click', openOptions);
 optionsOverlay?.addEventListener('click', closeOptions);
@@ -996,6 +1418,10 @@ function persistOptions() {
         localStorage.setItem('vv_camera_mode', cameraMode);
         const pose = { pos: camera.position.toArray(), tgt: controls.target.toArray() };
         localStorage.setItem('vv_camera_pose', JSON.stringify(pose));
+        localStorage.setItem('vv_wind', String(OPTIONS.windEnabled));
+        localStorage.setItem('vv_smoke_life_scale', String(OPTIONS.smokeLifeScale));
+        localStorage.setItem('vv_limits', JSON.stringify(LIMITS));
+        localStorage.setItem('vv_explosions', JSON.stringify(OPTIONS.enabledExplosions));
     } catch (_) { }
 }
 
@@ -1032,6 +1458,18 @@ function restoreOptions() {
             camera.position.copy(pos);
             controls.target.copy(pos.clone().add(dir.multiplyScalar(10)));
             controls.update();
+        }
+        const wind = localStorage.getItem('vv_wind');
+        if (wind !== null && optWind) { OPTIONS.windEnabled = wind === 'true'; optWind.checked = OPTIONS.windEnabled; }
+        const lifeScale = localStorage.getItem('vv_smoke_life_scale');
+        if (lifeScale !== null && optSmokeLife) { OPTIONS.smokeLifeScale = Number(lifeScale) || 1.0; optSmokeLife.value = String(OPTIONS.smokeLifeScale); }
+        const limits = localStorage.getItem('vv_limits');
+        if (limits) {
+            try { const parsed = JSON.parse(limits); Object.assign(LIMITS, parsed || {}); } catch { }
+        }
+        const exps = localStorage.getItem('vv_explosions');
+        if (exps) {
+            try { const parsed = JSON.parse(exps); Object.assign(OPTIONS.enabledExplosions, parsed || {}); } catch { }
         }
     } catch (_) { }
 }
@@ -1091,6 +1529,28 @@ const fileInput = qs('#file-input');
 const toggleAfter = qs('#toggle-afterimage');
 const toggleBloom = qs('#toggle-bloom');
 const cameraModeSelect = qs('#camera-mode');
+// Options controls
+const optWind = qs('#opt-wind');
+const optSmokeLife = qs('#opt-smoke-life');
+const optSmokeLifeVal = qs('#opt-smoke-life-val');
+const optMaxBurst = qs('#opt-max-burst');
+const optMaxBurstVal = qs('#opt-max-burst-val');
+const optMaxSmoke = qs('#opt-max-smoke');
+const optMaxSmokeVal = qs('#opt-max-smoke-val');
+const optMaxEmbers = qs('#opt-max-embers');
+const optMaxEmbersVal = qs('#opt-max-embers-val');
+const optMaxRockets = qs('#opt-max-rockets');
+const optMaxRocketsVal = qs('#opt-max-rockets-val');
+const optExpClassic = qs('#opt-exp-classic');
+const optExpBallLarge = qs('#opt-exp-ballLarge');
+const optExpRing = qs('#opt-exp-ring');
+const optExpSparkle = qs('#opt-exp-sparkle');
+const optExpBicolor = qs('#opt-exp-bicolor');
+const optExpPopper = qs('#opt-exp-popper');
+const optPresetDefault = qs('#opt-preset-default');
+const optPresetMin = qs('#opt-preset-min');
+const optPresetMed = qs('#opt-preset-med');
+const optPresetMax = qs('#opt-preset-max');
 
 playBtn.addEventListener('click', () => {
     if (state.currentIndex === -1 && state.tracks.length) playAtIndex(0);
@@ -1136,12 +1596,45 @@ function renderPlaylist() {
     ul.innerHTML = '';
     state.tracks.forEach((t, i) => {
         const li = document.createElement('li');
-        li.className = 'cursor-pointer rounded-md border border-white/10 px-2 py-1 text-xs hover:bg-white/10 ' + (i === state.currentIndex ? ' bg-white/20' : '');
-        li.textContent = t.name.replace(/\.[^.]+$/, '');
+        li.className = 'flex items-center justify-between gap-2 rounded-md border border-white/10 px-2 py-1 text-xs hover:bg-white/10 ' + (i === state.currentIndex ? ' bg-white/20' : '');
         li.title = t.name;
-        li.addEventListener('click', () => playAtIndex(i));
+        const name = document.createElement('span');
+        name.className = 'truncate pr-1';
+        name.textContent = t.name.replace(/\.[^.]+$/, '');
+        name.addEventListener('click', () => playAtIndex(i));
+        const btn = document.createElement('button');
+        btn.className = 'shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] hover:bg-white/20';
+        btn.textContent = '✕';
+        btn.title = 'Remove';
+        btn.addEventListener('click', (e) => { e.stopPropagation(); removeTrackAt(i); });
+        li.appendChild(name);
+        li.appendChild(btn);
         ul.appendChild(li);
     });
+}
+
+function removeTrackAt(index) {
+    if (index < 0 || index >= state.tracks.length) return;
+    const removedCurrent = index === state.currentIndex;
+    state.tracks.splice(index, 1);
+    if (state.tracks.length === 0) {
+        // nothing left
+        audioEl.pause();
+        audioEl.removeAttribute('src');
+        state.currentIndex = -1;
+        state.isPlaying = false;
+        const nowPlaying = qs('#now-playing');
+        if (nowPlaying) nowPlaying.textContent = 'No track loaded';
+        renderPlaylist();
+        return;
+    }
+    if (removedCurrent) {
+        const next = Math.min(index, state.tracks.length - 1);
+        playAtIndex(next);
+    } else {
+        if (index < state.currentIndex) state.currentIndex -= 1;
+        renderPlaylist();
+    }
 }
 
 async function playAtIndex(index) {
@@ -1221,5 +1714,74 @@ if (cameraModeSelect) {
         persistOptions();
     });
 }
+
+// Wire options controls
+function labelRange(el, labelEl, fmt = (v) => v) { if (labelEl && el) labelEl.textContent = fmt(el.value); }
+if (optWind) { optWind.addEventListener('change', () => { OPTIONS.windEnabled = optWind.checked; persistOptions(); }); }
+if (optSmokeLife) {
+    labelRange(optSmokeLife, optSmokeLifeVal, (v) => `${Number(v).toFixed(2)}x`);
+    optSmokeLife.addEventListener('input', () => { OPTIONS.smokeLifeScale = Number(optSmokeLife.value) || 1.0; labelRange(optSmokeLife, optSmokeLifeVal, (v) => `${Number(v).toFixed(2)}x`); persistOptions(); });
+}
+function wireCapSlider(input, label, key) {
+    if (!input) return;
+    const update = () => { LIMITS[key] = Number(input.value); if (label) label.textContent = String(LIMITS[key]); persistOptions(); };
+    update();
+    input.addEventListener('input', update);
+}
+wireCapSlider(optMaxBurst, optMaxBurstVal, 'maxBurstParticles');
+wireCapSlider(optMaxSmoke, optMaxSmokeVal, 'maxSmokeParticles');
+wireCapSlider(optMaxEmbers, optMaxEmbersVal, 'maxEmbers');
+wireCapSlider(optMaxRockets, optMaxRocketsVal, 'maxRockets');
+
+function wireExpToggle(input, name) {
+    if (!input) return;
+    input.checked = !!OPTIONS.enabledExplosions[name];
+    input.addEventListener('change', () => { OPTIONS.enabledExplosions[name] = input.checked; persistOptions(); });
+}
+wireExpToggle(optExpClassic, 'classic');
+wireExpToggle(optExpBallLarge, 'ballLarge');
+wireExpToggle(optExpRing, 'ring');
+wireExpToggle(optExpSparkle, 'sparkle');
+wireExpToggle(optExpBicolor, 'bicolor');
+wireExpToggle(optExpPopper, 'popper');
+
+// Presets
+function applyPreset(name) {
+    if (name === 'default') {
+        LIMITS.maxBurstParticles = 8000; LIMITS.maxSmokeParticles = 2500; LIMITS.maxEmbers = 700; LIMITS.maxRockets = 6;
+        OPTIONS.windEnabled = true; OPTIONS.smokeLifeScale = 1.0;
+        OPTIONS.enabledExplosions = { classic: true, ballLarge: true, ring: true, sparkle: true, bicolor: true };
+    } else if (name === 'min') {
+        LIMITS.maxBurstParticles = 3000; LIMITS.maxSmokeParticles = 800; LIMITS.maxEmbers = 300; LIMITS.maxRockets = 3;
+        OPTIONS.windEnabled = false; OPTIONS.smokeLifeScale = 0.6;
+        OPTIONS.enabledExplosions = { classic: true, ballLarge: false, ring: false, sparkle: false, bicolor: false };
+    } else if (name === 'med') {
+        LIMITS.maxBurstParticles = 6000; LIMITS.maxSmokeParticles = 1600; LIMITS.maxEmbers = 500; LIMITS.maxRockets = 5;
+        OPTIONS.windEnabled = true; OPTIONS.smokeLifeScale = 0.9;
+        OPTIONS.enabledExplosions = { classic: true, ballLarge: true, ring: true, sparkle: false, bicolor: true };
+    } else if (name === 'max') {
+        LIMITS.maxBurstParticles = 15000; LIMITS.maxSmokeParticles = 6000; LIMITS.maxEmbers = 1500; LIMITS.maxRockets = 8;
+        OPTIONS.windEnabled = true; OPTIONS.smokeLifeScale = 1.2;
+        OPTIONS.enabledExplosions = { classic: true, ballLarge: true, ring: true, sparkle: true, bicolor: true };
+    }
+    // Update UI to reflect
+    if (optWind) optWind.checked = OPTIONS.windEnabled;
+    if (optSmokeLife) { optSmokeLife.value = String(OPTIONS.smokeLifeScale); optSmokeLife.dispatchEvent(new Event('input')); }
+    if (optMaxBurst) { optMaxBurst.value = String(LIMITS.maxBurstParticles); optMaxBurst.dispatchEvent(new Event('input')); }
+    if (optMaxSmoke) { optMaxSmoke.value = String(LIMITS.maxSmokeParticles); optMaxSmoke.dispatchEvent(new Event('input')); }
+    if (optMaxEmbers) { optMaxEmbers.value = String(LIMITS.maxEmbers); optMaxEmbers.dispatchEvent(new Event('input')); }
+    if (optMaxRockets) { optMaxRockets.value = String(LIMITS.maxRockets); optMaxRockets.dispatchEvent(new Event('input')); }
+    if (optExpClassic) optExpClassic.checked = OPTIONS.enabledExplosions.classic;
+    if (optExpBallLarge) optExpBallLarge.checked = OPTIONS.enabledExplosions.ballLarge;
+    if (optExpRing) optExpRing.checked = OPTIONS.enabledExplosions.ring;
+    if (optExpSparkle) optExpSparkle.checked = OPTIONS.enabledExplosions.sparkle;
+    if (optExpBicolor) optExpBicolor.checked = OPTIONS.enabledExplosions.bicolor;
+    persistOptions();
+}
+
+optPresetDefault?.addEventListener('click', () => applyPreset('default'));
+optPresetMin?.addEventListener('click', () => applyPreset('min'));
+optPresetMed?.addEventListener('click', () => applyPreset('med'));
+optPresetMax?.addEventListener('click', () => applyPreset('max'));
 
 

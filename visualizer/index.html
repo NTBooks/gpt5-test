@@ -109,13 +109,26 @@
             <button id="options-close" class="control-btn">✕</button>
         </div>
         <div class="p-4 grid gap-3 text-xs">
+            <div class="grid gap-2 mb-1">
+                <div class="text-white/70">Performance presets</div>
+                <div class="flex gap-2">
+                    <button id="opt-preset-default"
+                        class="rounded-md border border-white/10 bg-white/10 px-2 py-1 hover:bg-white/20">Default</button>
+                    <button id="opt-preset-min"
+                        class="rounded-md border border-white/10 bg-white/10 px-2 py-1 hover:bg-white/20">Min</button>
+                    <button id="opt-preset-med"
+                        class="rounded-md border border-white/10 bg-white/10 px-2 py-1 hover:bg-white/20">Med</button>
+                    <button id="opt-preset-max"
+                        class="rounded-md border border-white/10 bg-white/10 px-2 py-1 hover:bg-white/20">Max</button>
+                </div>
+            </div>
             <label class="flex items-center justify-between gap-3">
                 <span>Trails</span>
-                <input id="toggle-afterimage" type="checkbox" class="accent-white" />
+                <input id="toggle-afterimage" type="checkbox" class="pretty-checkbox" />
             </label>
             <label class="flex items-center justify-between gap-3">
                 <span>Bloom</span>
-                <input id="toggle-bloom" type="checkbox" class="accent-white" />
+                <input id="toggle-bloom" type="checkbox" class="pretty-checkbox" />
             </label>
             <div class="grid gap-1">
                 <span>Camera</span>
@@ -127,6 +140,68 @@
                     <option value="user">User</option>
                 </select>
             </div>
+
+            <div class="mt-2 grid gap-2">
+                <div class="flex items-center justify-between">
+                    <span>Wind</span>
+                    <input id="opt-wind" type="checkbox" class="pretty-checkbox" checked />
+                </div>
+                <div class="grid gap-1">
+                    <label class="flex items-center justify-between">
+                        <span>Smoke linger <span id="opt-smoke-life-val" class="text-white/50"></span></span>
+                        <input id="opt-smoke-life" type="range" min="0.2" max="2" step="0.05" value="1" class="w-36" />
+                    </label>
+                </div>
+                <div class="grid gap-2">
+                    <div class="text-white/70">Particle caps</div>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Max burst <span id="opt-max-burst-val" class="text-white/50"></span></span>
+                        <input id="opt-max-burst" type="range" min="1000" max="20000" step="500" value="8000"
+                            class="w-36" />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Max smoke <span id="opt-max-smoke-val" class="text-white/50"></span></span>
+                        <input id="opt-max-smoke" type="range" min="500" max="10000" step="250" value="2500"
+                            class="w-36" />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Max embers <span id="opt-max-embers-val" class="text-white/50"></span></span>
+                        <input id="opt-max-embers" type="range" min="100" max="3000" step="50" value="700"
+                            class="w-36" />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Max rockets <span id="opt-max-rockets-val" class="text-white/50"></span></span>
+                        <input id="opt-max-rockets" type="range" min="1" max="20" step="1" value="6" class="w-36" />
+                    </label>
+                </div>
+                <div class="grid gap-2">
+                    <div class="text-white/70">Explosion types</div>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Classic</span>
+                        <input id="opt-exp-classic" type="checkbox" class="pretty-checkbox" checked />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Large Ball</span>
+                        <input id="opt-exp-ballLarge" type="checkbox" class="pretty-checkbox" checked />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Ring</span>
+                        <input id="opt-exp-ring" type="checkbox" class="pretty-checkbox" checked />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Sparkle</span>
+                        <input id="opt-exp-sparkle" type="checkbox" class="pretty-checkbox" checked />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Bi-color</span>
+                        <input id="opt-exp-bicolor" type="checkbox" class="pretty-checkbox" checked />
+                    </label>
+                    <label class="flex items-center justify-between gap-3">
+                        <span>Popper</span>
+                        <input id="opt-exp-popper" type="checkbox" class="pretty-checkbox" checked />
+                    </label>
+                </div>
+            </div>
         </div>
     </aside>
 
@@ -136,9 +211,13 @@
         <div id="camera-toast-text" class="rounded-lg bg-black/60 px-4 py-2 text-sm ring-1 ring-white/10">Camera</div>
     </div>
 
-    <!-- Bottom-right camera HUD -->
+    <!-- Bottom-right HUDs (hidden until Options open) -->
+    <div id="stats-hud"
+        class="hidden pointer-events-none fixed bottom-36 right-3 z-[55] rounded bg-black/50 px-2 py-1 text-[11px] text-white/70 ring-1 ring-white/10">
+        FPS: 0 | Bursts: 0 | Smoke: 0 | Embers: 0 | Rockets: 0
+    </div>
     <div id="camera-hud"
-        class="pointer-events-auto fixed bottom-24 right-3 z-[55] rounded bg-black/40 px-2 py-1 text-[11px] text-white/60 ring-1 ring-white/10 cursor-pointer">
+        class="hidden pointer-events-auto fixed bottom-24 right-3 z-[55] rounded bg-black/40 px-2 py-1 text-[11px] text-white/60 ring-1 ring-white/10 cursor-pointer">
         Pos: 0,0,0 | Yaw: 0° | Pitch: 0°
     </div>
 
